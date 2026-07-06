@@ -1014,17 +1014,14 @@
       };
     }
     const line = positionLine(player.position);
-    const own = currentClub();
     const minuteFactor = minutes / 90;
     const form = player.form * 0.14;
-    const quality = (player.overall - opponentRating) / 17;
-    const teamContext = (own.rating - opponentRating) / 24;
     const morale = (player.morale - 50) / 48;
     const fatigue = Math.max(0, player.fatigue - 50) / 42;
     const noise = (random() + random() + random() - 1.5) * 0.75;
     const rating = clamp(
-      6.35 + quality + teamContext * 0.4 + form + morale - fatigue + minuteFactor * 0.42 + noise + matchImportance,
-      4.8,
+      6.35 + form + morale - fatigue + minuteFactor * 0.42 + noise + matchImportance,
+      5.2,
       9.8
     );
     let goals = 0;
@@ -1077,19 +1074,19 @@
     if (isGoalkeeper && oppGoals === 0) rating += 0.6;
 
     if (won && (goals || assists) && minutes >= 45) {
-      rating = Math.max(rating, 6.5);
+      rating = Math.max(rating, bigWin ? 7.2 : margin >= 2 ? 7.0 : 6.8);
     } else if (won && minutes >= 45) {
-      const winFloor = bigWin && minutes >= 60 ? 6.6 : bigWin ? 6.2 : margin >= 2 ? 6.0 : 5.9;
+      const winFloor = bigWin && minutes >= 60 ? 6.8 : bigWin ? 6.5 : margin >= 2 ? 6.3 : 6.1;
       rating = Math.max(rating, winFloor);
     } else if (drawn && minutes >= 60 && (goals || assists)) {
-      rating = Math.max(rating, 6.1);
-    } else if (!won && goals > 0 && goals >= ownGoals) {
       rating = Math.max(rating, 6.3);
+    } else if (!won && goals > 0 && goals >= ownGoals) {
+      rating = Math.max(rating, 6.5);
     } else if (minutes >= 75) {
-      rating = Math.max(rating, 5.6);
+      rating = Math.max(rating, 5.8);
     }
 
-    rating = clamp(rating, 4.8, 9.8);
+    rating = clamp(rating, 5.0, 9.8);
 
     let xp = Math.round(14 + minutes * 0.42 + Math.max(0, rating - 6) * 11 + goals * 24 + assists * 16 + saves * 5);
     if (won) xp += 15;
@@ -1097,7 +1094,7 @@
     else if (goals || assists) xp += 10;
 
     const text = buildContributionText(minutes, rating, goals, assists, saves);
-    return { ...contribution, rating, xp, text };
+    return { ...contribution, rating, xp, text, matchWon: won, matchDrawn: drawn, hadContribution: goals > 0 || assists > 0 };
   }
 
   function simulateUserMatch(match, detailed) {
@@ -1208,11 +1205,76 @@
     updateTable(leagueId, match.home, match.away, score.homeGoals, score.awayGoals);
   }
 
+  function buildWinContributionMediaEvents(contribution, resultText, own) {
+    return [
+      {
+        title: "胜利功臣",
+        prompt: `记者问：“${resultText}，你${contribution.goals ? `打入 ${contribution.goals} 球` : ""}${contribution.goals && contribution.assists ? "并" : ""}${contribution.assists ? `送出 ${contribution.assists} 次助攻` : ""}，怎么评价自己的表现？”`,
+        choices: [
+          { label: "帮助球队赢球最重要，个人数据是副产品。", effects: { manager: 3, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
+          { label: "我还需要更稳定，今天只是做到了该做的。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+          { label: "关键进球/助攻当然开心，我会把状态延续下去。", effects: { manager: 2, fans: 3, teammates: 2, morale: 3 }, tone: "positive" }
+        ]
+      },
+      {
+        title: "赛后通道",
+        prompt: `混采区记者问：“${resultText} 后更衣室气氛很好，你的${contribution.goals ? "进球" : "助攻"}是转折点吗？”`,
+        choices: [
+          { label: "全队都在拼，我只是完成了该完成的工作。", effects: { manager: 3, fans: 2, teammates: 3, morale: 2 }, tone: "positive" },
+          { label: "关键球需要冷静，今天做到了。", effects: { manager: 2, fans: 3, teammates: 1, morale: 3 }, tone: "positive" },
+          { label: "我会把这种感觉带到下一场比赛。", effects: { manager: 2, fans: 2, morale: 2 }, tone: "positive" }
+        ]
+      }
+    ];
+  }
+
+  function buildWinMediaEvents(contribution, resultText, own, margin) {
+    const events = [
+      {
+        title: "赛后胜利采访",
+        prompt: `记者问：“${resultText}，作为获胜的一方，你怎么评价今天全队表现？”`,
+        choices: [
+          { label: "三分最重要，全队执行了比赛计划。", effects: { manager: 3, fans: 2, teammates: 2, morale: 2 }, tone: "positive" },
+          { label: "赢球让人开心，但我个人还有提升空间。", effects: { manager: 2, fans: 1, morale: 2 }, tone: "positive" },
+          { label: "我会把胜利当作动力，继续争取更多时间。", effects: { manager: 2, fans: 2, agent: 1, morale: 2 }, tone: "info" }
+        ]
+      }
+    ];
+    if (margin >= 3) {
+      events.unshift({
+        title: "大胜庆功",
+        prompt: `记者笑着问：“${resultText}，全队士气正高，你怎么评价今天这场胜利？”`,
+        choices: [
+          { label: "这是全队努力的结果，我们要保持这种强度。", effects: { manager: 3, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
+          { label: "大胜让人兴奋，但赛季还长，不能松懈。", effects: { manager: 4, board: 1, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+          { label: "我们会把胜利当作新的起点。", effects: { manager: 2, fans: 2, teammates: 2, morale: 2 }, tone: "positive" }
+        ]
+      });
+    }
+    return events;
+  }
+
   function maybeCreateMediaEvent(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0) {
     const state = stateContainer.state;
     const player = state.player;
     const own = currentClub();
     if (state.pendingChoice) return;
+
+    const margin = ownGoals - oppGoals;
+    const hadContribution = contribution.hadContribution ?? (contribution.goals > 0 || contribution.assists > 0);
+    const matchWon = contribution.matchWon ?? won;
+
+    if (matchWon && hadContribution) {
+      const event = choice(buildWinContributionMediaEvents(contribution, resultText, own));
+      state.pendingChoice = { kind: "media", title: event.title, prompt: event.prompt, choices: event.choices };
+      return;
+    }
+    if (matchWon && contribution.rating > 0) {
+      const event = choice(buildWinMediaEvents(contribution, resultText, own, margin));
+      state.pendingChoice = { kind: "media", title: event.title, prompt: event.prompt, choices: event.choices };
+      return;
+    }
+
     const strategyLabels = {
       stay: "留队竞争",
       minutes: "争取更多出场",
@@ -1221,17 +1283,10 @@
       transfer: "寻求永久转会",
       leave: "寻求永久转会"
     };
-    const margin = ownGoals - oppGoals;
     const bigWin = won && margin >= 3;
     const isBench = contribution.rating === 0;
-    const hadContribution = contribution.goals > 0 || contribution.assists > 0;
-    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution && !won;
-    const goodGame =
-      contribution.rating >= 7.8 ||
-      (hadContribution && contribution.rating >= 6.5) ||
-      (won && hadContribution) ||
-      (won && contribution.rating >= 5.8) ||
-      bigWin;
+    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution;
+    const goodGame = contribution.rating >= 7.8 || (hadContribution && contribution.rating >= 6.5) || bigWin;
     const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
     const triggerChance = isBench || marketNoise ? 0.34 : 0.18;
     const trigger = goodGame || poorGame || bigWin || random() < triggerChance;
@@ -1268,43 +1323,7 @@
       );
     }
 
-    if (goodGame || (won && contribution.rating > 0)) {
-      if (won && hadContribution) {
-        highlightEvents.push(
-          {
-            title: "胜利功臣",
-            prompt: `记者问：“${resultText}，你${contribution.goals ? `打入 ${contribution.goals} 球` : ""}${contribution.goals && contribution.assists ? "并" : ""}${contribution.assists ? `送出 ${contribution.assists} 次助攻` : ""}，怎么评价自己的表现？”`,
-            choices: [
-              { label: "帮助球队赢球最重要，个人数据是副产品。", effects: { manager: 3, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
-              { label: "我还需要更稳定，今天只是做到了该做的。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
-              { label: "进球/助攻当然开心，但我想要更多首发机会。", effects: { manager: -1, fans: 2, agent: 2, morale: 3 }, tone: "info" }
-            ]
-          },
-          {
-            title: "赛后通道",
-            prompt: `混采区记者问：“${resultText} 后更衣室气氛很好，你的${contribution.goals ? "进球" : "助攻"}是转折点吗？”`,
-            choices: [
-              { label: "全队都在拼，我只是完成了该完成的工作。", effects: { manager: 3, fans: 2, teammates: 3, morale: 2 }, tone: "positive" },
-              { label: "关键球需要冷静，今天做到了。", effects: { manager: 2, fans: 3, teammates: 1, morale: 3 }, tone: "positive" },
-              { label: "我会把这种感觉带到下一场比赛。", effects: { manager: 2, fans: 2, morale: 2 }, tone: "positive" }
-            ]
-          }
-        );
-      } else if (won) {
-        highlightEvents.push(
-          {
-            title: "赛后胜利采访",
-            prompt: `记者问：“${resultText}，作为获胜的一方，你怎么评价今天全队表现？”`,
-            choices: [
-              { label: "三分最重要，全队执行了比赛计划。", effects: { manager: 3, fans: 2, teammates: 2, morale: 2 }, tone: "positive" },
-              { label: "赢球让人开心，但我个人还有提升空间。", effects: { manager: 2, fans: 1, morale: 2 }, tone: "positive" },
-              { label: "我会把胜利当作动力，继续争取更多时间。", effects: { manager: 2, fans: 2, agent: 1, morale: 2 }, tone: "info" }
-            ]
-          }
-        );
-      }
-
-      if (goodGame && !(won && hadContribution)) {
+    if (goodGame) {
       highlightEvents.push(
         {
           title: "赛后发布会",
@@ -1325,7 +1344,6 @@
           ]
         }
       );
-      }
     }
 
     if (poorGame) {
