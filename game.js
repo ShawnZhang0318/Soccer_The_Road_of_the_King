@@ -1060,9 +1060,11 @@
     const minuteFactor = minutes / 90;
     const margin = ownGoals - oppGoals;
     const bigWin = won && margin >= 3;
+    const bigLoss = !won && !drawn && margin <= -3;
+    const heavyLoss = !won && !drawn && margin <= -2;
     let rating = contribution.rating;
 
-    rating += won ? 0.7 : drawn ? 0.22 : -0.1;
+    rating += won ? 0.7 : drawn ? 0.22 : bigLoss ? -1.15 : heavyLoss ? -0.75 : -0.35;
     rating += goals * 0.88;
     rating += assists * 0.42;
     rating += minuteFactor * 0.38;
@@ -1082,8 +1084,14 @@
       rating = Math.max(rating, 6.3);
     } else if (!won && goals > 0 && goals >= ownGoals) {
       rating = Math.max(rating, 6.5);
-    } else if (minutes >= 75) {
+    } else if (minutes >= 75 && (won || drawn || goals || assists)) {
       rating = Math.max(rating, 5.8);
+    }
+
+    if (!won && !drawn && !goals && !assists) {
+      if (bigLoss) rating = Math.min(rating, 6.2);
+      else if (heavyLoss) rating = Math.min(rating, 6.6);
+      else rating = Math.min(rating, 7.0);
     }
 
     rating = clamp(rating, 5.0, 9.8);
@@ -1094,7 +1102,72 @@
     else if (goals || assists) xp += 10;
 
     const text = buildContributionText(minutes, rating, goals, assists, saves);
-    return { ...contribution, rating, xp, text, matchWon: won, matchDrawn: drawn, hadContribution: goals > 0 || assists > 0 };
+    const performanceTier = classifyPerformanceTier({ won, drawn, margin, rating, goals, assists, minutes });
+    return {
+      ...contribution,
+      rating,
+      xp,
+      text,
+      matchWon: won,
+      matchDrawn: drawn,
+      matchMargin: margin,
+      hadContribution: goals > 0 || assists > 0,
+      performanceTier
+    };
+  }
+
+  function classifyPerformanceTier({ won, drawn, margin, rating, goals, assists, minutes }) {
+    const hadContribution = goals > 0 || assists > 0;
+    if (minutes <= 0) return "bench";
+    if (won) {
+      if (hadContribution || rating >= 7.4) return "standout";
+      if (rating >= 6.2) return "routine";
+      return "struggle";
+    }
+    if (drawn) {
+      if (hadContribution || rating >= 7.0) return "standout";
+      return "routine";
+    }
+    if (hadContribution || rating >= 7.2) return "standout";
+    if (margin <= -3) return "heavy";
+    if (margin <= -2) return "heavy";
+    if (rating <= 5.8 && !hadContribution) return "struggle";
+    return "routine";
+  }
+
+  function getMatchMediaContext(contribution, won, drawn, ownGoals, oppGoals) {
+    const margin = contribution.matchMargin ?? ownGoals - oppGoals;
+    const hadContribution = contribution.hadContribution ?? (contribution.goals > 0 || contribution.assists > 0);
+    const rating = contribution.rating || 0;
+    const tier = contribution.performanceTier || classifyPerformanceTier({
+      won,
+      drawn,
+      margin,
+      rating,
+      goals: contribution.goals,
+      assists: contribution.assists,
+      minutes: contribution.minutes
+    });
+    return {
+      margin,
+      hadContribution,
+      rating,
+      tier,
+      won,
+      drawn,
+      bigWin: won && margin >= 3,
+      bigLoss: !won && !drawn && margin <= -3,
+      heavyLoss: !won && !drawn && margin <= -2
+    };
+  }
+
+  function setMediaEvent(event) {
+    stateContainer.state.pendingChoice = {
+      kind: "media",
+      title: event.title,
+      prompt: event.prompt,
+      choices: event.choices
+    };
   }
 
   function simulateUserMatch(match, detailed) {
@@ -1205,6 +1278,150 @@
     updateTable(leagueId, match.home, match.away, score.homeGoals, score.awayGoals);
   }
 
+  function buildWinStandoutPersonalMediaEvents(contribution, resultText, own) {
+    return [
+      {
+        title: "高光胜利",
+        prompt: `记者问：“${resultText}，你这场个人发挥很抢眼，怎么评价自己的状态？”`,
+        choices: [
+          { label: "赢球最重要，但个人状态确实不错。", effects: { manager: 3, fans: 2, teammates: 2, morale: 3 }, tone: "positive" },
+          { label: "我还需要把这样的表现稳定下来。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+          { label: "我会继续用训练把状态留住。", effects: { manager: 2, fans: 2, morale: 2 }, tone: "info" }
+        ]
+      },
+      ...buildWinContributionMediaEvents(contribution, resultText, own)
+    ];
+  }
+
+  function buildWinRoutineMediaEvents(resultText, own) {
+    return [
+      {
+        title: "赛后胜利采访",
+        prompt: `记者问：“${resultText}，球队拿到了三分，但过程并不轻松。你怎么看？”`,
+        choices: [
+          { label: "三分最重要，全队还需要更稳定。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+          { label: "赢球让人开心，但我个人还有提升空间。", effects: { manager: 2, fans: 1, morale: 2 }, tone: "positive" },
+          { label: "我会把胜利当作动力，继续争取更多时间。", effects: { manager: 2, fans: 2, agent: 1, morale: 2 }, tone: "info" }
+        ]
+      },
+      {
+        title: "混采区",
+        prompt: `记者问：“${resultText} 后，你觉得自己这场贡献足够吗？”`,
+        choices: [
+          { label: "我完成了任务，但还能做得更好。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "info" },
+          { label: "团队赢球，我的表现只是中规中矩。", effects: { manager: 2, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+          { label: "我需要更多决定性表现来证明自己。", effects: { manager: -1, fans: 2, agent: 1, morale: 2 }, tone: "info" }
+        ]
+      }
+    ];
+  }
+
+  function buildWinStruggleMediaEvents(resultText, own) {
+    return [
+      {
+        title: "赢球反思",
+        prompt: `记者问：“${resultText}，球队赢了，但你这场发挥似乎不在最佳状态。你怎么看？”`,
+        choices: [
+          { label: "赢球能掩盖问题，但我不会找借口。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+          { label: "我会回看录像，下一场要更稳定。", effects: { manager: 3, fans: 0, teammates: 2, morale: 1 }, tone: "info" },
+          { label: "结果满意，但个人表现确实不够好。", effects: { manager: 2, fans: 1, morale: 0 }, tone: "info" }
+        ]
+      }
+    ];
+  }
+
+  function buildLossStandoutMediaEvents(contribution, resultText, own) {
+    const statLine = contribution.goals
+      ? `打入 ${contribution.goals} 球`
+      : contribution.assists
+        ? `送出 ${contribution.assists} 次助攻`
+        : "个人表现不错";
+    return [
+      {
+        title: "虽败犹荣",
+        prompt: `记者问：“${resultText}，球队输了，但你${statLine}。你怎么评价自己的表现？”`,
+        choices: [
+          { label: "结果不满意，但至少我完成了该做的。", effects: { manager: 2, fans: 2, teammates: 2, morale: 2 }, tone: "positive" },
+          { label: "个人表现不能代替团队胜利，我会继续拼。", effects: { manager: 3, fans: 1, teammates: 3, morale: 1 }, tone: "positive" },
+          { label: "这样的比赛让我更想证明自己能带队赢球。", effects: { manager: 1, fans: 2, agent: 2, morale: 2 }, tone: "info" }
+        ]
+      },
+      {
+        title: "赛后通道",
+        prompt: `混采区记者问：“${resultText} 后，不少评论认为你是球队少数亮点，你怎么看？”`,
+        choices: [
+          { label: "感谢认可，但我更想要胜利。", effects: { manager: 2, fans: 2, teammates: 1, morale: 2 }, tone: "positive" },
+          { label: "亮点不够，我还需要更稳定。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "info" },
+          { label: "我会把这样的表现延续到下一场。", effects: { manager: 2, fans: 2, morale: 2 }, tone: "positive" }
+        ]
+      }
+    ];
+  }
+
+  function buildHeavyLossMediaEvents(resultText, own) {
+    return [
+      {
+        title: "惨败采访",
+        prompt: `赛后采访区气氛沉重，记者问：“${resultText}，这场失利对你和球队意味着什么？”`,
+        choices: [
+          { label: "这是教训，我们必须尽快回应。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+          { label: "比分很难看，但赛季还没结束。", effects: { manager: 2, fans: 0, teammates: 1, morale: 0 }, tone: "info" },
+          { label: "这样的比赛会伤害信心，但只能向前看。", effects: { manager: 1, fans: -1, teammates: 1, morale: -1 }, tone: "warning" }
+        ]
+      },
+      {
+        title: "更衣室气氛",
+        prompt: `记者问：“${resultText} 后，更衣室气氛如何？你会怎么调整？”`,
+        choices: [
+          { label: "没人能接受这样的比分，训练里要找回强度。", effects: { manager: 3, teammates: 2, morale: 1 }, tone: "positive" },
+          { label: "先恢复，再把注意力放到下一场。", effects: { manager: 2, teammates: 1, morale: 1, fatigue: -3 }, tone: "info" },
+          { label: "我需要更多上场时间来改变局面。", effects: { manager: -1, fans: 1, agent: 2, morale: 1 }, tone: "warning" }
+        ]
+      }
+    ];
+  }
+
+  function buildLossRoutineMediaEvents(resultText, own, struggle) {
+    return [
+      {
+        title: struggle ? "失利反思" : "赛后采访",
+        prompt: struggle
+          ? `记者问：“${resultText}，你这场发挥也不理想。问题出在哪里？”`
+          : `记者问：“${resultText} 之后，你怎么评价球队和个人的表现？”`,
+        choices: [
+          { label: "结果和表现都要提升，我会先看录像。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+          { label: "团队输球，我个人也需要更稳定。", effects: { manager: 2, fans: 0, teammates: 1, morale: 0 }, tone: "info" },
+          { label: "这样的比赛很打击士气，但只能继续拼。", effects: { manager: 1, fans: -1, teammates: 1, morale: -1 }, tone: "warning" }
+        ]
+      },
+      {
+        title: "战术讨论",
+        prompt: `专栏记者问：“${resultText} 后，你觉得问题主要在个人还是整体？”`,
+        choices: [
+          { label: "整体防守和转换都有问题，我先做好自己。", effects: { manager: 2, fans: 1, teammates: 2, morale: 1 }, tone: "info" },
+          { label: "我还需要更好地适应比赛节奏。", effects: { manager: 2, fans: 0, teammates: 1, morale: 1, fatigue: -3 }, tone: "info" },
+          { label: "我希望以后能在更合适的角色里踢球。", effects: { manager: -2, board: -1, fans: 1, agent: 2, morale: 1 }, tone: "warning" }
+        ]
+      }
+    ];
+  }
+
+  function buildDrawMediaEvents(resultText, own, standout) {
+    return [
+      {
+        title: standout ? "平局亮点" : "平局采访",
+        prompt: standout
+          ? `记者问：“${resultText}，虽然只拿一分，但你有不错发挥。怎么看？”`
+          : `记者问：“${resultText}，各取一分后，你怎么评价这场比赛？”`,
+        choices: [
+          { label: "一分可以接受，但我们本可以做得更好。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "info" },
+          { label: "我会把个人状态延续到下一场。", effects: { manager: 2, fans: 1, morale: 2 }, tone: "positive" },
+          { label: "平局不够，我们要争取更多胜利。", effects: { manager: 2, fans: 2, teammates: 1, morale: 1 }, tone: "positive" }
+        ]
+      }
+    ];
+  }
+
   function buildWinContributionMediaEvents(contribution, resultText, own) {
     return [
       {
@@ -1256,147 +1473,28 @@
 
   function maybeCreateMediaEvent(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0) {
     const state = stateContainer.state;
-    const player = state.player;
     const own = currentClub();
     if (state.pendingChoice) return;
 
-    const margin = ownGoals - oppGoals;
-    const hadContribution = contribution.hadContribution ?? (contribution.goals > 0 || contribution.assists > 0);
-    const matchWon = contribution.matchWon ?? won;
-
-    if (matchWon && hadContribution) {
-      const event = choice(buildWinContributionMediaEvents(contribution, resultText, own));
-      state.pendingChoice = { kind: "media", title: event.title, prompt: event.prompt, choices: event.choices };
-      return;
-    }
-    if (matchWon && contribution.rating > 0) {
-      const event = choice(buildWinMediaEvents(contribution, resultText, own, margin));
-      state.pendingChoice = { kind: "media", title: event.title, prompt: event.prompt, choices: event.choices };
-      return;
-    }
-
-    const strategyLabels = {
-      stay: "留队竞争",
-      minutes: "争取更多出场",
-      bigger: "等待更大舞台",
-      loan: "寻求外租",
-      transfer: "寻求永久转会",
-      leave: "寻求永久转会"
-    };
-    const bigWin = won && margin >= 3;
-    const isBench = contribution.rating === 0;
-    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution;
-    const goodGame = contribution.rating >= 7.8 || (hadContribution && contribution.rating >= 6.5) || bigWin;
+    const ctx = getMatchMediaContext(contribution, won, drawn, ownGoals, oppGoals);
     const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
-    const triggerChance = isBench || marketNoise ? 0.34 : 0.18;
-    const trigger = goodGame || poorGame || bigWin || random() < triggerChance;
+    const triggerChance = ctx.tier === "bench" || marketNoise ? 0.34 : 0.18;
+    const trigger = ctx.tier !== "routine" || marketNoise || random() < triggerChance;
     if (!trigger) {
       createSocialPulse(contribution, won, drawn, resultText, ownGoals, oppGoals);
       return;
     }
 
-    const celebrationEvents = [];
-    const highlightEvents = [];
-    const neutralEvents = [];
-    const concernEvents = [];
-
-    if (bigWin) {
-      celebrationEvents.push(
-        {
-          title: "大胜庆功",
-          prompt: `记者笑着问：“${resultText}，全队士气正高，你怎么评价今天这场胜利？”`,
-          choices: [
-            { label: "这是全队努力的结果，我们要保持这种强度。", effects: { manager: 3, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
-            { label: "大胜让人兴奋，但赛季还长，不能松懈。", effects: { manager: 4, board: 1, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
-            { label: "进球和零封都很关键，下场继续这样踢。", effects: { manager: 2, fans: 2, teammates: 2, morale: 2 }, tone: "positive" }
-          ]
-        },
-        {
-          title: "赛后混采",
-          prompt: `混采区气氛轻松，记者问：“球队踢出了赛季最佳表现之一，你的感受是什么？”`,
-          choices: [
-            { label: "更衣室氛围很好，这种胜利会给我们信心。", effects: { manager: 2, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
-            { label: "我们执行了教练的战术，值得高兴。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
-            { label: "个人也要继续进步，不能因为一场大胜就满足。", effects: { manager: 3, fans: 1, teammates: 1, morale: 1 }, tone: "info" }
-          ]
-        }
-      );
-    }
-
-    if (goodGame) {
-      highlightEvents.push(
-        {
-          title: "赛后发布会",
-          prompt: `赛后发布会，记者问：“${won ? "赢球" : "比赛"}后你今天表现很亮眼，是不是已经证明自己该锁定首发？”`,
-          choices: [
-            { label: "强调团队：首发要靠每天训练争取。", effects: { manager: 3, fans: 1, teammates: 3, morale: 2 }, tone: "positive" },
-            { label: "自信回应：我就是为大场面而生。", effects: { manager: -1, fans: 4, teammates: -1, morale: 4 }, tone: "warning" },
-            { label: "回避问题：这些由教练决定。", effects: { manager: 1, fans: -1, teammates: 1, morale: 0 }, tone: "info" }
-          ]
-        },
-        {
-          title: "混采区追问",
-          prompt: `记者追问：“${won ? "胜利" : "连续有高光表现"}后，你会不会觉得自己已经准备好承担更多责任？”`,
-          choices: [
-            { label: `我现在只专注帮${own.name}赢球。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 1 }, tone: "positive" },
-            { label: "每个球员都想踢最高水平比赛，我也一样。", effects: { manager: -2, board: -1, fans: 3, agent: 3, morale: 3 }, tone: "warning" },
-            { label: "舞台不是说出来的，要靠下一场继续证明。", effects: { manager: 2, fans: 2, teammates: 1, morale: 2 }, tone: "positive" }
-          ]
-        }
-      );
-    }
-
-    if (poorGame) {
-      concernEvents.push(
-        {
-          title: "赛后采访",
-          prompt: `赛后采访区气氛不轻松，记者追问：“你今天几次处理球都比较挣扎，怎么看？”`,
-          choices: [
-            { label: "承担责任：我会把录像看完，下一场回应。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
-            { label: "解释身体：最近疲劳有点高，但这不是借口。", effects: { manager: 0, fans: -1, teammates: 1, morale: 0, fatigue: -5 }, tone: "info" },
-            { label: "强硬反击：外界不懂我的任务。", effects: { manager: -3, fans: -4, teammates: -2, morale: 2 }, tone: "negative" }
-          ]
-        },
-        {
-          title: "战术争议",
-          prompt: `专栏记者问：“你今天看起来不太适应这个位置，是状态问题还是战术任务限制了你？”`,
-          choices: [
-            { label: "我需要做得更好，位置不是理由。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
-            { label: "有些任务外界看不见，但我会继续适应。", effects: { manager: 2, fans: -1, teammates: 1, morale: 0 }, tone: "info" },
-            { label: "我希望以后能踢更适合自己的角色。", effects: { manager: -3, board: -1, fans: 2, agent: 2, morale: 1 }, tone: "warning" }
-          ]
-        },
-        {
-          title: "舆论压力",
-          prompt: `网络上有人把失利归咎于你，记者问：“这些批评会不会影响你的信心？”`,
-          choices: [
-            { label: "批评我会听，但信心不会丢。", effects: { manager: 2, fans: 1, teammates: 1, morale: 2 }, tone: "positive" },
-            { label: "这就是职业足球，我会用训练回应。", effects: { manager: 2, fans: 0, teammates: 1, morale: 1 }, tone: "info" },
-            { label: "有些评论太不公平了。", effects: { manager: -1, fans: -3, teammates: -1, morale: -1 }, tone: "negative" }
-          ]
-        }
-      );
-    }
-
-    if (isBench) {
-      const benchPool = won
+    if (ctx.tier === "bench") {
+      const benchPool = ctx.won
         ? [
             {
-              title: "大胜替补席",
-              prompt: `球队${resultText}大胜，但你没有获得出场。记者问：“你怎么看待这场胜利和自己的角色？”`,
+              title: "胜利替补席",
+              prompt: `球队${resultText}赢球，但你没有获得出场。记者问：“你怎么看待这场胜利和自己的角色？”`,
               choices: [
                 { label: "为队友高兴，我会继续训练等待机会。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
                 { label: "胜利属于全队，但我确实需要比赛时间。", effects: { manager: -1, fans: 1, agent: 2, morale: 2 }, tone: "info" },
-                { label: "大胜让我更想尽快回到场上。", effects: { manager: 2, fans: 2, teammates: 1, morale: 2 }, tone: "positive" }
-              ]
-            },
-            {
-              title: "赛后通道",
-              prompt: `通道里记者问：“${resultText} 后更衣室气氛很好，你作为替补有什么感受？”`,
-              choices: [
-                { label: "我会把胜利当作动力，而不是借口。", effects: { manager: 3, teammates: 2, morale: 2 }, tone: "positive" },
-                { label: "我支持队友，但也希望尽快得到机会。", effects: { manager: 0, fans: 1, agent: 2, morale: 1 }, tone: "info" },
-                { label: "训练和比赛同样重要，我会保持准备。", effects: { manager: 2, fans: 1, morale: 1 }, tone: "positive" }
+                { label: "赢球让我更想尽快回到场上。", effects: { manager: 2, fans: 2, teammates: 1, morale: 2 }, tone: "positive" }
               ]
             }
           ]
@@ -1409,86 +1507,51 @@
                 { label: "我会先把训练做好，机会来了必须抓住。", effects: { manager: 3, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
                 { label: "这些事情会交给经纪人评估。", effects: { manager: -2, board: -1, fans: 2, agent: 3, morale: 1 }, tone: "warning" }
               ]
-            },
-            {
-              title: "主帅安排",
-              prompt: `赛后有记者问：“你整场坐在替补席，对主教练的用人安排是什么态度？”`,
-              choices: [
-                { label: "主帅有计划，我要做的是随时准备好。", effects: { manager: 4, teammates: 1, fans: 0, morale: 1 }, tone: "positive" },
-                { label: "当然不满意，但情绪不能影响更衣室。", effects: { manager: -1, teammates: 2, fans: 2, morale: 2 }, tone: "warning" },
-                { label: "这个问题也许你们应该问教练。", effects: { manager: -6, board: -2, fans: 3, morale: -1 }, tone: "negative" }
-              ]
             }
           ];
-      (won ? neutralEvents : concernEvents).push(...benchPool);
+      setMediaEvent(choice(benchPool));
+      return;
     }
 
-    if (marketNoise && !won) {
-      const strategyLabel = strategyLabels[state.market.strategy] || "评估未来";
-      const loanLine = state.market.strategy === "loan" ? "外租不是后退，我更看重稳定上场和成长。" : "未来要看俱乐部、经纪人和我的竞技规划。";
-      neutralEvents.push({
-        title: "转会窗追问",
-        prompt: `转会窗期间，记者问：“你的团队最近在${strategyLabel}，你是否已经考虑离开${own.name}？”`,
-        choices: [
-          { label: `我现在还是${own.name}球员，比赛优先。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 0 }, tone: "positive" },
-          { label: loanLine, effects: { manager: -2, board: -1, fans: 2, agent: 4, morale: 2 }, tone: "warning" },
-          { label: "如果有真正相信我的球队，我愿意听。", effects: { manager: -5, board: -2, fans: 3, agent: 4, morale: 3 }, tone: "warning" }
-        ]
-      });
+    if (ctx.won) {
+      if (ctx.tier === "standout" && ctx.hadContribution) {
+        setMediaEvent(choice(buildWinContributionMediaEvents(contribution, resultText, own)));
+        return;
+      }
+      if (ctx.tier === "standout") {
+        setMediaEvent(choice(buildWinStandoutPersonalMediaEvents(contribution, resultText, own)));
+        return;
+      }
+      if (ctx.bigWin) {
+        setMediaEvent(choice(buildWinMediaEvents(contribution, resultText, own, ctx.margin)));
+        return;
+      }
+      if (ctx.tier === "routine") {
+        setMediaEvent(choice(buildWinRoutineMediaEvents(resultText, own)));
+        return;
+      }
+      if (ctx.tier === "struggle") {
+        setMediaEvent(choice(buildWinStruggleMediaEvents(resultText, own)));
+        return;
+      }
+      setMediaEvent(choice(buildWinRoutineMediaEvents(resultText, own)));
+      return;
     }
 
-    if ((random() < 0.45 || player.reputation >= 42) && !bigWin) {
-      neutralEvents.push({
-        title: "球迷频道",
-        prompt: `球迷频道连线采访问：“很多年轻球员都有梦想球队，你最喜欢哪支球队？”`,
-        choices: [
-          { label: `现在我只代表${own.name}，别的留给未来。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 1 }, tone: "positive" },
-          { label: "我从小喜欢进攻足球，豪门当然让人向往。", effects: { manager: -2, fans: 4, agent: 2, morale: 2 }, tone: "warning" },
-          { label: "最喜欢能让我上场、信任我的球队。", effects: { manager: 0, fans: 2, agent: 3, morale: 2 }, tone: "info" }
-        ]
-      });
+    if (ctx.drawn) {
+      setMediaEvent(choice(buildDrawMediaEvents(resultText, own, ctx.tier === "standout")));
+      return;
     }
 
-    if (!celebrationEvents.length && !highlightEvents.length && !neutralEvents.length && !concernEvents.length) {
-      neutralEvents.push({
-        title: "赛后采访",
-        prompt: `记者问：“${resultText} 之后，你觉得自己下一阶段最需要提升什么？”`,
-        choices: [
-          { label: "稳定性。每周都要拿出同样强度。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
-          { label: "身体和节奏，我还需要适应职业比赛。", effects: { manager: 1, fans: 0, teammates: 1, morale: 1, fatigue: -3 }, tone: "info" },
-          { label: "我需要更多上场时间来证明自己。", effects: { manager: -2, fans: 2, agent: 2, morale: 2 }, tone: "warning" }
-        ]
-      });
+    if (ctx.tier === "standout") {
+      setMediaEvent(choice(buildLossStandoutMediaEvents(contribution, resultText, own)));
+      return;
     }
-
-    const positivePool = [...celebrationEvents, ...highlightEvents];
-    const neutralPool = [...neutralEvents];
-    const negativePool = won ? [] : [...concernEvents];
-    const event =
-      positivePool.length && (bigWin || won || goodGame || random() < 0.72)
-        ? choice(positivePool)
-        : negativePool.length
-          ? choice(negativePool)
-          : neutralPool.length
-            ? choice(neutralPool)
-            : choice([
-                {
-                  title: "赛后采访",
-                  prompt: `记者问：“${resultText} 之后，你觉得自己下一阶段最需要提升什么？”`,
-                  choices: [
-                    { label: "稳定性。每周都要拿出同样强度。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
-                    { label: "身体和节奏，我还需要适应职业比赛。", effects: { manager: 1, fans: 0, teammates: 1, morale: 1, fatigue: -3 }, tone: "info" },
-                    { label: "我需要更多上场时间来证明自己。", effects: { manager: -2, fans: 2, agent: 2, morale: 2 }, tone: "warning" }
-                  ]
-                }
-              ]);
-
-    state.pendingChoice = {
-      kind: "media",
-      title: event.title,
-      prompt: event.prompt,
-      choices: event.choices
-    };
+    if (ctx.bigLoss || ctx.heavyLoss) {
+      setMediaEvent(choice(buildHeavyLossMediaEvents(resultText, own)));
+      return;
+    }
+    setMediaEvent(choice(buildLossRoutineMediaEvents(resultText, own, ctx.tier === "struggle")));
   }
 
   function createSocialPulse(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0) {
@@ -1521,7 +1584,7 @@
           { tone: "info", text: `${lead}球迷论坛开帖分析${positionName(player.position)}轮换顺位，你的名字被反复提到。` }
         );
       }
-    } else if (contribution.rating >= 7.4) {
+    } else if (won && contribution.rating >= 7.4) {
       pulses.push(
         { tone: "info", text: `${lead}不少球迷开始剪辑你的高光片段，称你踢得越来越像一线队球员。` },
         { tone: "positive", text: `${lead}数据博主晒出你的评分和关键贡献，认为你应该得到更稳定的比赛时间。` },
