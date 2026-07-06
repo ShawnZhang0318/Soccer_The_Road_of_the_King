@@ -1014,19 +1014,25 @@
       };
     }
     const line = positionLine(player.position);
-    const form = player.form * 0.13;
-    const quality = (player.overall - opponentRating) / 13;
-    const morale = (player.morale - 50) / 45;
-    const fatigue = Math.max(0, player.fatigue - 45) / 38;
-    const noise = (random() + random() + random() - 1.5) * 0.85;
-    const rating = clamp(6.25 + quality + form + morale - fatigue + noise + matchImportance, 4.2, 9.8);
+    const own = currentClub();
+    const minuteFactor = minutes / 90;
+    const form = player.form * 0.14;
+    const quality = (player.overall - opponentRating) / 17;
+    const teamContext = (own.rating - opponentRating) / 24;
+    const morale = (player.morale - 50) / 48;
+    const fatigue = Math.max(0, player.fatigue - 50) / 42;
+    const noise = (random() + random() + random() - 1.5) * 0.75;
+    const rating = clamp(
+      6.35 + quality + teamContext * 0.4 + form + morale - fatigue + minuteFactor * 0.42 + noise + matchImportance,
+      4.8,
+      9.8
+    );
     let goals = 0;
     let assists = 0;
     let saves = 0;
     if (line === "goalkeeper") {
       saves = clamp(Math.round(randomInt(1, 6) + (player.attributes.goalkeeping - opponentRating) / 8 + randomInt(-1, 2)), 0, 10);
     } else {
-      const minuteFactor = minutes / 90;
       const attackSkill = line === "attacker" ? player.attributes.shooting : line === "midfielder" ? player.attributes.passing : player.attributes.defending;
       const goalChance = clamp((attackSkill - 48) * minuteFactor * (line === "attacker" ? 1.35 : line === "midfielder" ? 0.55 : 0.22), 2, 58);
       if (random() * 100 < goalChance + (rating - 7) * 9) goals += 1;
@@ -1054,16 +1060,34 @@
     }
 
     const { minutes, goals, assists, saves } = contribution;
+    const minuteFactor = minutes / 90;
+    const margin = ownGoals - oppGoals;
+    const bigWin = won && margin >= 3;
     let rating = contribution.rating;
 
-    rating += won ? 0.55 : drawn ? 0.18 : -0.15;
-    rating += goals * 0.82;
-    rating += assists * 0.38;
-    if (won && goals + assists > 0) rating += 0.25;
-    if (drawn && goals > 0) rating += 0.2;
-    if (!won && goals > 0 && goals >= ownGoals) rating += 0.7;
-    if (isGoalkeeper && oppGoals === 0) rating += 0.55;
-    rating = clamp(rating, 4.2, 9.8);
+    rating += won ? 0.7 : drawn ? 0.22 : -0.1;
+    rating += goals * 0.88;
+    rating += assists * 0.42;
+    rating += minuteFactor * 0.38;
+    if (bigWin) rating += 0.9;
+    else if (won && margin >= 2) rating += 0.45;
+    if (won && goals + assists > 0) rating += 0.3;
+    if (drawn && goals > 0) rating += 0.22;
+    if (!won && goals > 0 && goals >= ownGoals) rating += 0.75;
+    if (isGoalkeeper && oppGoals === 0) rating += 0.6;
+
+    if (won && minutes >= 45) {
+      const winFloor = bigWin && minutes >= 60 ? 6.6 : bigWin ? 6.2 : margin >= 2 ? 6.0 : 5.9;
+      rating = Math.max(rating, winFloor);
+    } else if (drawn && minutes >= 60 && (goals || assists)) {
+      rating = Math.max(rating, 6.1);
+    } else if (!won && goals > 0 && goals >= ownGoals) {
+      rating = Math.max(rating, 6.3);
+    } else if (minutes >= 75) {
+      rating = Math.max(rating, 5.6);
+    }
+
+    rating = clamp(rating, 4.8, 9.8);
 
     let xp = Math.round(14 + minutes * 0.42 + Math.max(0, rating - 6) * 11 + goals * 24 + assists * 16 + saves * 5);
     if (won) xp += 15;
@@ -1144,7 +1168,7 @@
       const commentary = buildCommentary(own, opponent, ownGoals, oppGoals, contribution, isHome, won, drawn);
       commentary.reverse().forEach((line) => addLog("info", line, "match"));
     }
-    maybeCreateMediaEvent(contribution, won, drawn, resultText);
+    maybeCreateMediaEvent(contribution, won, drawn, resultText, ownGoals, oppGoals);
   }
 
   function buildCommentary(own, opponent, ownGoals, oppGoals, contribution, isHome, won, drawn) {
@@ -1182,7 +1206,7 @@
     updateTable(leagueId, match.home, match.away, score.homeGoals, score.awayGoals);
   }
 
-  function maybeCreateMediaEvent(contribution, won, drawn, resultText) {
+  function maybeCreateMediaEvent(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0) {
     const state = stateContainer.state;
     const player = state.player;
     const own = currentClub();
@@ -1195,24 +1219,57 @@
       transfer: "寻求永久转会",
       leave: "寻求永久转会"
     };
+    const margin = ownGoals - oppGoals;
+    const bigWin = won && margin >= 3;
     const isBench = contribution.rating === 0;
     const hadContribution = contribution.goals > 0 || contribution.assists > 0;
-    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution;
-    const goodGame = contribution.rating >= 7.8 || (hadContribution && contribution.rating >= 6.8);
+    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution && !won;
+    const goodGame =
+      contribution.rating >= 7.8 ||
+      (hadContribution && contribution.rating >= 6.8) ||
+      (won && contribution.rating >= 6.0) ||
+      bigWin;
     const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
     const triggerChance = isBench || marketNoise ? 0.34 : 0.18;
-    const trigger = goodGame || poorGame || random() < triggerChance;
+    const trigger = goodGame || poorGame || bigWin || random() < triggerChance;
     if (!trigger) {
-      createSocialPulse(contribution, won, drawn, resultText);
+      createSocialPulse(contribution, won, drawn, resultText, ownGoals, oppGoals);
       return;
     }
 
-    const events = [];
+    const celebrationEvents = [];
+    const highlightEvents = [];
+    const neutralEvents = [];
+    const concernEvents = [];
+
+    if (bigWin) {
+      celebrationEvents.push(
+        {
+          title: "大胜庆功",
+          prompt: `记者笑着问：“${resultText}，全队士气正高，你怎么评价今天这场胜利？”`,
+          choices: [
+            { label: "这是全队努力的结果，我们要保持这种强度。", effects: { manager: 3, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
+            { label: "大胜让人兴奋，但赛季还长，不能松懈。", effects: { manager: 4, board: 1, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+            { label: "进球和零封都很关键，下场继续这样踢。", effects: { manager: 2, fans: 2, teammates: 2, morale: 2 }, tone: "positive" }
+          ]
+        },
+        {
+          title: "赛后混采",
+          prompt: `混采区气氛轻松，记者问：“球队踢出了赛季最佳表现之一，你的感受是什么？”`,
+          choices: [
+            { label: "更衣室氛围很好，这种胜利会给我们信心。", effects: { manager: 2, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
+            { label: "我们执行了教练的战术，值得高兴。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+            { label: "个人也要继续进步，不能因为一场大胜就满足。", effects: { manager: 3, fans: 1, teammates: 1, morale: 1 }, tone: "info" }
+          ]
+        }
+      );
+    }
+
     if (goodGame) {
-      events.push(
+      highlightEvents.push(
         {
           title: "赛后发布会",
-          prompt: `赛后发布会，记者问：“你今天表现很亮眼，是不是已经证明自己该锁定首发？”`,
+          prompt: `赛后发布会，记者问：“${won ? "赢球" : "比赛"}后你今天表现很亮眼，是不是已经证明自己该锁定首发？”`,
           choices: [
             { label: "强调团队：首发要靠每天训练争取。", effects: { manager: 3, fans: 1, teammates: 3, morale: 2 }, tone: "positive" },
             { label: "自信回应：我就是为大场面而生。", effects: { manager: -1, fans: 4, teammates: -1, morale: 4 }, tone: "warning" },
@@ -1221,7 +1278,7 @@
         },
         {
           title: "混采区追问",
-          prompt: `记者追问：“连续有高光表现后，你会不会觉得自己已经准备好去更大的舞台？”`,
+          prompt: `记者追问：“${won ? "胜利" : "连续有高光表现"}后，你会不会觉得自己已经准备好承担更多责任？”`,
           choices: [
             { label: `我现在只专注帮${own.name}赢球。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 1 }, tone: "positive" },
             { label: "每个球员都想踢最高水平比赛，我也一样。", effects: { manager: -2, board: -1, fans: 3, agent: 3, morale: 3 }, tone: "warning" },
@@ -1232,7 +1289,7 @@
     }
 
     if (poorGame) {
-      events.push(
+      concernEvents.push(
         {
           title: "赛后采访",
           prompt: `赛后采访区气氛不轻松，记者追问：“你今天几次处理球都比较挣扎，怎么看？”`,
@@ -1264,32 +1321,54 @@
     }
 
     if (isBench) {
-      events.push(
-        {
-          title: "替补席话题",
-          prompt: `社交媒体上有人质疑你出场时间太少，记者问：“如果继续没机会，你会考虑外租或离队吗？”`,
-          choices: [
-            { label: `我尊重${own.name}的安排，但球员需要比赛。`, effects: { manager: -1, board: 0, fans: 1, agent: 3, morale: 2 }, tone: "warning" },
-            { label: "我会先把训练做好，机会来了必须抓住。", effects: { manager: 3, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
-            { label: "这些事情会交给经纪人评估。", effects: { manager: -2, board: -1, fans: 2, agent: 3, morale: 1 }, tone: "warning" }
+      const benchPool = won
+        ? [
+            {
+              title: "大胜替补席",
+              prompt: `球队${resultText}大胜，但你没有获得出场。记者问：“你怎么看待这场胜利和自己的角色？”`,
+              choices: [
+                { label: "为队友高兴，我会继续训练等待机会。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+                { label: "胜利属于全队，但我确实需要比赛时间。", effects: { manager: -1, fans: 1, agent: 2, morale: 2 }, tone: "info" },
+                { label: "大胜让我更想尽快回到场上。", effects: { manager: 2, fans: 2, teammates: 1, morale: 2 }, tone: "positive" }
+              ]
+            },
+            {
+              title: "赛后通道",
+              prompt: `通道里记者问：“${resultText} 后更衣室气氛很好，你作为替补有什么感受？”`,
+              choices: [
+                { label: "我会把胜利当作动力，而不是借口。", effects: { manager: 3, teammates: 2, morale: 2 }, tone: "positive" },
+                { label: "我支持队友，但也希望尽快得到机会。", effects: { manager: 0, fans: 1, agent: 2, morale: 1 }, tone: "info" },
+                { label: "训练和比赛同样重要，我会保持准备。", effects: { manager: 2, fans: 1, morale: 1 }, tone: "positive" }
+              ]
+            }
           ]
-        },
-        {
-          title: "主帅安排",
-          prompt: `赛后有记者问：“你整场坐在替补席，对主教练的用人安排是什么态度？”`,
-          choices: [
-            { label: "主帅有计划，我要做的是随时准备好。", effects: { manager: 4, teammates: 1, fans: 0, morale: 1 }, tone: "positive" },
-            { label: "当然不满意，但情绪不能影响更衣室。", effects: { manager: -1, teammates: 2, fans: 2, morale: 2 }, tone: "warning" },
-            { label: "这个问题也许你们应该问教练。", effects: { manager: -6, board: -2, fans: 3, morale: -1 }, tone: "negative" }
-          ]
-        }
-      );
+        : [
+            {
+              title: "替补席话题",
+              prompt: `社交媒体上有人质疑你出场时间太少，记者问：“如果继续没机会，你会考虑外租或离队吗？”`,
+              choices: [
+                { label: `我尊重${own.name}的安排，但球员需要比赛。`, effects: { manager: -1, board: 0, fans: 1, agent: 3, morale: 2 }, tone: "warning" },
+                { label: "我会先把训练做好，机会来了必须抓住。", effects: { manager: 3, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
+                { label: "这些事情会交给经纪人评估。", effects: { manager: -2, board: -1, fans: 2, agent: 3, morale: 1 }, tone: "warning" }
+              ]
+            },
+            {
+              title: "主帅安排",
+              prompt: `赛后有记者问：“你整场坐在替补席，对主教练的用人安排是什么态度？”`,
+              choices: [
+                { label: "主帅有计划，我要做的是随时准备好。", effects: { manager: 4, teammates: 1, fans: 0, morale: 1 }, tone: "positive" },
+                { label: "当然不满意，但情绪不能影响更衣室。", effects: { manager: -1, teammates: 2, fans: 2, morale: 2 }, tone: "warning" },
+                { label: "这个问题也许你们应该问教练。", effects: { manager: -6, board: -2, fans: 3, morale: -1 }, tone: "negative" }
+              ]
+            }
+          ];
+      (won ? neutralEvents : concernEvents).push(...benchPool);
     }
 
-    if (marketNoise) {
+    if (marketNoise && !won) {
       const strategyLabel = strategyLabels[state.market.strategy] || "评估未来";
       const loanLine = state.market.strategy === "loan" ? "外租不是后退，我更看重稳定上场和成长。" : "未来要看俱乐部、经纪人和我的竞技规划。";
-      events.push({
+      neutralEvents.push({
         title: "转会窗追问",
         prompt: `转会窗期间，记者问：“你的团队最近在${strategyLabel}，你是否已经考虑离开${own.name}？”`,
         choices: [
@@ -1300,8 +1379,8 @@
       });
     }
 
-    if (random() < 0.45 || player.reputation >= 42) {
-      events.push({
+    if ((random() < 0.45 || player.reputation >= 42) && !bigWin) {
+      neutralEvents.push({
         title: "球迷频道",
         prompt: `球迷频道连线采访问：“很多年轻球员都有梦想球队，你最喜欢哪支球队？”`,
         choices: [
@@ -1312,8 +1391,8 @@
       });
     }
 
-    if (!events.length) {
-      events.push({
+    if (!celebrationEvents.length && !highlightEvents.length && !neutralEvents.length && !concernEvents.length) {
+      neutralEvents.push({
         title: "赛后采访",
         prompt: `记者问：“${resultText} 之后，你觉得自己下一阶段最需要提升什么？”`,
         choices: [
@@ -1324,7 +1403,17 @@
       });
     }
 
-    const event = choice(events);
+    const event =
+      celebrationEvents.length && (bigWin || random() < 0.72)
+        ? choice(celebrationEvents)
+        : highlightEvents.length && (goodGame || won)
+          ? choice(highlightEvents)
+          : concernEvents.length && !won
+            ? choice(concernEvents)
+            : neutralEvents.length
+              ? choice(neutralEvents)
+              : choice([...celebrationEvents, ...highlightEvents, ...neutralEvents, ...concernEvents]);
+
     state.pendingChoice = {
       kind: "media",
       title: event.title,
@@ -1333,27 +1422,43 @@
     };
   }
 
-  function createSocialPulse(contribution, won, drawn, resultText) {
+  function createSocialPulse(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0) {
     const state = stateContainer.state;
     const player = state.player;
     const own = currentClub();
     const pulses = [];
     const lead = `社交媒体热度：${resultText} 后，`;
+    const margin = ownGoals - oppGoals;
+    const bigWin = won && margin >= 3;
 
-    if (contribution.rating === 0) {
+    if (bigWin) {
       pulses.push(
-        { tone: "info", text: `${lead}球迷把镜头扫到你热身的片段剪出来，讨论你是否该得到更多机会。` },
-        { tone: "info", text: `${lead}当地记者提到你连续等待机会，认为接下来几周的训练态度会很关键。` },
-        { tone: "warning", text: `${lead}评论区有人建议你考虑外租，也有人认为年轻球员应该继续耐心等待。` },
-        { tone: "info", text: `${lead}球迷论坛开帖分析${positionName(player.position)}轮换顺位，你的名字被反复提到。` }
+        { tone: "positive", text: `${lead}球迷刷屏庆祝，认为球队打出了赛季最完整的一场比赛。` },
+        { tone: "positive", text: `${lead}当地媒体标题清一色是“大胜”，更衣室士气成为热议话题。` },
+        { tone: "info", text: `${lead}评论员提醒球队别被一场大胜冲昏头脑，但总体评价非常积极。` }
       );
+    } else if (contribution.rating === 0) {
+      if (won) {
+        pulses.push(
+          { tone: "positive", text: `${lead}球迷沉浸在胜利喜悦中，也有人在讨论替补轮换是否该给你机会。` },
+          { tone: "info", text: `${lead}当地记者说球队深度不错，但年轻球员仍需要比赛来成长。` },
+          { tone: "info", text: `${lead}社媒上有人剪辑全队庆祝画面，你的名字出现在“下一个该上场的人”讨论里。` }
+        );
+      } else {
+        pulses.push(
+          { tone: "info", text: `${lead}球迷把镜头扫到你热身的片段剪出来，讨论你是否该得到更多机会。` },
+          { tone: "info", text: `${lead}当地记者提到你连续等待机会，认为接下来几周的训练态度会很关键。` },
+          { tone: "warning", text: `${lead}评论区有人建议你考虑外租，也有人认为年轻球员应该继续耐心等待。` },
+          { tone: "info", text: `${lead}球迷论坛开帖分析${positionName(player.position)}轮换顺位，你的名字被反复提到。` }
+        );
+      }
     } else if (contribution.rating >= 7.4) {
       pulses.push(
         { tone: "info", text: `${lead}不少球迷开始剪辑你的高光片段，称你踢得越来越像一线队球员。` },
         { tone: "positive", text: `${lead}数据博主晒出你的评分和关键贡献，认为你应该得到更稳定的比赛时间。` },
         { tone: "info", text: `${lead}转播嘉宾夸你在关键区域处理球冷静，社媒关注度明显上涨。` }
       );
-    } else if (contribution.rating <= 5.9 && !contribution.goals && !contribution.assists) {
+    } else if (contribution.rating <= 5.9 && !contribution.goals && !contribution.assists && !won) {
       pulses.push(
         { tone: "warning", text: `${lead}评论区对你的发挥有些不耐烦，尤其在几次丢失球权后批评声变多。` },
         { tone: "warning", text: `${lead}球迷电台讨论你是否被放在了不舒服的位置，但也提醒年轻球员必须更稳定。` },
@@ -1367,22 +1472,22 @@
       );
     } else {
       pulses.push(
-        { tone: "info", text: `${lead}${won ? "舆论整体轻松，认为你踢得很成熟。" : drawn ? "评论比较中性，大家更关心球队排名。" : "舆论有些低沉，但还没有集中到你身上。"}` },
-        { tone: "info", text: `${lead}球迷更关注球队结果，你的表现被评价为中规中矩。` },
-        { tone: "info", text: `${lead}本地媒体给你的关键词是“稳定”和“还需要更多存在感”。` }
+        { tone: won ? "positive" : "info", text: `${lead}${won ? "舆论整体轻松，认为你踢得很成熟。" : drawn ? "评论比较中性，大家更关心球队排名。" : "舆论有些低沉，但还没有集中到你身上。"}` },
+        { tone: "info", text: `${lead}${won ? "球迷更关注球队大胜，你的表现被评价为稳定可靠。" : "球迷更关注球队结果，你的表现被评价为中规中矩。"}` },
+        { tone: "info", text: `${lead}本地媒体给你的关键词是“${won ? "团队贡献" : "稳定"}”和“${won ? "值得更多机会" : "还需要更多存在感"}”。` }
       );
     }
 
-    if (state.market.isOpen) {
+    if (state.market.isOpen && !won) {
       pulses.push(
         { tone: "info", text: `转会窗流言：有记者称经纪人${state.agent.name}仍在接触潜在下家，但正式报价才算数。` },
         { tone: "warning", text: `网络评论开始猜测你是否会在窗口关闭前改变计划，${own.name}球迷希望你先专注比赛。` }
       );
     }
 
-    if (state.market.strategy === "loan") {
+    if (state.market.strategy === "loan" && !won) {
       pulses.push({ tone: "info", text: `外租话题升温：球迷争论你是该留队等机会，还是去一支能承诺时间的球队练级。` });
-    } else if (state.market.strategy === "transfer" || state.market.strategy === "bigger") {
+    } else if ((state.market.strategy === "transfer" || state.market.strategy === "bigger") && !won) {
       pulses.push({ tone: "warning", text: `转会话题升温：部分球迷担心你已经在考虑下一站，也有人觉得年轻球员需要更高舞台。` });
     }
 
