@@ -1076,7 +1076,9 @@
     if (!won && goals > 0 && goals >= ownGoals) rating += 0.75;
     if (isGoalkeeper && oppGoals === 0) rating += 0.6;
 
-    if (won && minutes >= 45) {
+    if (won && (goals || assists) && minutes >= 45) {
+      rating = Math.max(rating, 6.5);
+    } else if (won && minutes >= 45) {
       const winFloor = bigWin && minutes >= 60 ? 6.6 : bigWin ? 6.2 : margin >= 2 ? 6.0 : 5.9;
       rating = Math.max(rating, winFloor);
     } else if (drawn && minutes >= 60 && (goals || assists)) {
@@ -1226,8 +1228,9 @@
     const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution && !won;
     const goodGame =
       contribution.rating >= 7.8 ||
-      (hadContribution && contribution.rating >= 6.8) ||
-      (won && contribution.rating >= 6.0) ||
+      (hadContribution && contribution.rating >= 6.5) ||
+      (won && hadContribution) ||
+      (won && contribution.rating >= 5.8) ||
       bigWin;
     const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
     const triggerChance = isBench || marketNoise ? 0.34 : 0.18;
@@ -1265,7 +1268,43 @@
       );
     }
 
-    if (goodGame) {
+    if (goodGame || (won && contribution.rating > 0)) {
+      if (won && hadContribution) {
+        highlightEvents.push(
+          {
+            title: "胜利功臣",
+            prompt: `记者问：“${resultText}，你${contribution.goals ? `打入 ${contribution.goals} 球` : ""}${contribution.goals && contribution.assists ? "并" : ""}${contribution.assists ? `送出 ${contribution.assists} 次助攻` : ""}，怎么评价自己的表现？”`,
+            choices: [
+              { label: "帮助球队赢球最重要，个人数据是副产品。", effects: { manager: 3, fans: 2, teammates: 3, morale: 3 }, tone: "positive" },
+              { label: "我还需要更稳定，今天只是做到了该做的。", effects: { manager: 3, fans: 1, teammates: 2, morale: 2 }, tone: "positive" },
+              { label: "进球/助攻当然开心，但我想要更多首发机会。", effects: { manager: -1, fans: 2, agent: 2, morale: 3 }, tone: "info" }
+            ]
+          },
+          {
+            title: "赛后通道",
+            prompt: `混采区记者问：“${resultText} 后更衣室气氛很好，你的${contribution.goals ? "进球" : "助攻"}是转折点吗？”`,
+            choices: [
+              { label: "全队都在拼，我只是完成了该完成的工作。", effects: { manager: 3, fans: 2, teammates: 3, morale: 2 }, tone: "positive" },
+              { label: "关键球需要冷静，今天做到了。", effects: { manager: 2, fans: 3, teammates: 1, morale: 3 }, tone: "positive" },
+              { label: "我会把这种感觉带到下一场比赛。", effects: { manager: 2, fans: 2, morale: 2 }, tone: "positive" }
+            ]
+          }
+        );
+      } else if (won) {
+        highlightEvents.push(
+          {
+            title: "赛后胜利采访",
+            prompt: `记者问：“${resultText}，作为获胜的一方，你怎么评价今天全队表现？”`,
+            choices: [
+              { label: "三分最重要，全队执行了比赛计划。", effects: { manager: 3, fans: 2, teammates: 2, morale: 2 }, tone: "positive" },
+              { label: "赢球让人开心，但我个人还有提升空间。", effects: { manager: 2, fans: 1, morale: 2 }, tone: "positive" },
+              { label: "我会把胜利当作动力，继续争取更多时间。", effects: { manager: 2, fans: 2, agent: 1, morale: 2 }, tone: "info" }
+            ]
+          }
+        );
+      }
+
+      if (goodGame && !(won && hadContribution)) {
       highlightEvents.push(
         {
           title: "赛后发布会",
@@ -1286,6 +1325,7 @@
           ]
         }
       );
+      }
     }
 
     if (poorGame) {
@@ -1403,16 +1443,27 @@
       });
     }
 
+    const positivePool = [...celebrationEvents, ...highlightEvents];
+    const neutralPool = [...neutralEvents];
+    const negativePool = won ? [] : [...concernEvents];
     const event =
-      celebrationEvents.length && (bigWin || random() < 0.72)
-        ? choice(celebrationEvents)
-        : highlightEvents.length && (goodGame || won)
-          ? choice(highlightEvents)
-          : concernEvents.length && !won
-            ? choice(concernEvents)
-            : neutralEvents.length
-              ? choice(neutralEvents)
-              : choice([...celebrationEvents, ...highlightEvents, ...neutralEvents, ...concernEvents]);
+      positivePool.length && (bigWin || won || goodGame || random() < 0.72)
+        ? choice(positivePool)
+        : negativePool.length
+          ? choice(negativePool)
+          : neutralPool.length
+            ? choice(neutralPool)
+            : choice([
+                {
+                  title: "赛后采访",
+                  prompt: `记者问：“${resultText} 之后，你觉得自己下一阶段最需要提升什么？”`,
+                  choices: [
+                    { label: "稳定性。每周都要拿出同样强度。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
+                    { label: "身体和节奏，我还需要适应职业比赛。", effects: { manager: 1, fans: 0, teammates: 1, morale: 1, fatigue: -3 }, tone: "info" },
+                    { label: "我需要更多上场时间来证明自己。", effects: { manager: -2, fans: 2, agent: 2, morale: 2 }, tone: "warning" }
+                  ]
+                }
+              ]);
 
     state.pendingChoice = {
       kind: "media",
