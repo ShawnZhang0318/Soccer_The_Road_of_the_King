@@ -273,7 +273,7 @@ select:focus {
 
 .tabbar {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -391,6 +391,64 @@ select:focus {
 .action-grid {
   display: grid;
   gap: 10px;
+}
+
+.growth-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  border: 1px solid rgba(51, 66, 55, 0.74);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+}
+
+.compact-heading {
+  margin-bottom: 0;
+}
+
+.compact-heading strong {
+  color: var(--text);
+}
+
+.growth-meter {
+  height: 10px;
+  border-radius: 999px;
+  background: #0a0d0b;
+  overflow: hidden;
+}
+
+.growth-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+
+.growth-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.growth-grid div {
+  min-height: 50px;
+  border: 1px solid rgba(51, 66, 55, 0.62);
+  border-radius: 6px;
+  background: rgba(13, 18, 15, 0.56);
+  padding: 8px;
+}
+
+.growth-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--soft);
+  font-size: 12px;
+}
+
+.growth-grid strong {
+  color: var(--text);
+  font-size: 16px;
 }
 
 .action-grid {
@@ -556,6 +614,101 @@ tr.highlight {
   line-height: 1.65;
 }
 
+.honors-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.honor-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.honor-summary,
+.honor-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.honor-summary {
+  min-height: 98px;
+  padding: 12px;
+}
+
+.honor-summary span,
+.honor-summary small,
+.honor-card span,
+.honor-card p,
+.honor-splits {
+  color: var(--muted);
+}
+
+.honor-summary strong {
+  display: block;
+  margin: 8px 0 4px;
+  color: var(--text);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.honor-summary small {
+  line-height: 1.45;
+}
+
+.honor-splits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.honor-splits span {
+  border: 1px solid rgba(51, 66, 55, 0.74);
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.honor-list {
+  display: grid;
+  gap: 10px;
+}
+
+.honor-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-left: 3px solid var(--line);
+}
+
+.honor-card.gold {
+  border-left-color: var(--gold);
+}
+
+.honor-card.legend {
+  border-left-color: var(--green);
+  background: rgba(80, 200, 120, 0.055);
+}
+
+.honor-card h4 {
+  margin: 4px 0 6px;
+  color: var(--text);
+}
+
+.honor-card p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.honor-card > strong {
+  align-self: start;
+  color: var(--gold);
+  white-space: nowrap;
+}
+
 .choice-modal {
   position: fixed;
   inset: 0;
@@ -646,14 +799,14 @@ tr.highlight {
     position: sticky;
     top: 68px;
     z-index: 18;
-    grid-template-columns: repeat(5, minmax(58px, 1fr));
+    grid-template-columns: repeat(6, minmax(54px, 1fr));
     overflow-x: auto;
     padding-bottom: 4px;
     background: rgba(16, 20, 17, 0.94);
   }
 
   .tab {
-    min-width: 58px;
+    min-width: 54px;
     font-size: 13px;
   }
 
@@ -667,6 +820,14 @@ tr.highlight {
 
   .action-grid {
     grid-template-columns: 1fr;
+  }
+
+  .honor-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .honor-card {
+    align-items: flex-start;
   }
 
   .bar-row {

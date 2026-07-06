@@ -500,10 +500,16 @@
     if (typeof loaded.player.parentClubId === "undefined") loaded.player.parentClubId = null;
     if (typeof loaded.player.loanUntilSeasonYear === "undefined") loaded.player.loanUntilSeasonYear = null;
     if (loaded.player.parentClubId && !club(loaded.player.parentClubId)) loaded.player.parentClubId = null;
+    if (!Array.isArray(loaded.player.honors)) loaded.player.honors = [];
+    if (!loaded.player.careerStats) loaded.player.careerStats = freshCareerStats();
+    normalizeCareerStats(loaded.player.careerStats);
+    if (!loaded.player.national) loaded.player.national = { caps: 0, goals: 0 };
+    if (typeof loaded.player.national.goals !== "number") loaded.player.national.goals = 0;
     if (!loaded.market) loaded.market = { isOpen: false, windowType: null, strategy: "stay", offers: [] };
     if (loaded.market.strategy === "leave") loaded.market.strategy = "transfer";
     if (!["stay", "minutes", "bigger", "loan", "transfer"].includes(loaded.market.strategy)) loaded.market.strategy = "stay";
     if (!Array.isArray(loaded.market.offers)) loaded.market.offers = [];
+    if (typeof loaded.market.lastOfferWeek === "undefined") loaded.market.lastOfferWeek = null;
     if (!loaded.windows) loaded.windows = { summer: false, winter: false };
     if (!loaded.leagues) loaded.leagues = {};
     if (!Array.isArray(loaded.logs)) loaded.logs = [];
@@ -762,8 +768,7 @@
   function trainingGain(mode) {
     const player = stateContainer.state.player;
     const base = mode === "intense" ? randomInt(16, 26) : mode === "recovery" ? randomInt(3, 8) : randomInt(8, 16);
-    const potentialGap = Math.max(1, player.potential - player.overall);
-    const gain = Math.round(base * clamp(potentialGap / 18, 0.35, 1.2));
+    const gain = Math.round(base * growthGainMultiplier(player));
     if (mode === "intense") {
       player.fatigue = clamp(player.fatigue + randomInt(8, 16), 0, 100);
       player.morale = clamp(player.morale + randomInt(-2, 3), 0, 100);
@@ -778,6 +783,62 @@
     return gain;
   }
 
+  function growthNeeded(player = stateContainer.state.player) {
+    return 95 + player.overall * 4;
+  }
+
+  function growthGainMultiplier(player = stateContainer.state.player) {
+    const potentialGap = Math.max(1, player.potential - player.overall);
+    return clamp(potentialGap / 18, 0.35, 1.2);
+  }
+
+  function averageTrainingGain(mode, player = stateContainer.state.player) {
+    const base = mode === "intense" ? 21 : mode === "recovery" ? 5.5 : 12;
+    return Math.max(1, Math.round(base * growthGainMultiplier(player)));
+  }
+
+  function estimatedMatchGain(player = stateContainer.state.player) {
+    const roleMinutes = {
+      "主力": 72,
+      "租借主力": 68,
+      "轮换": 34,
+      "租借轮换": 30,
+      "梯队核心": 22,
+      "未来计划": 18,
+      "青训合同到期": 12
+    };
+    const minutes = roleMinutes[player.role] || 28;
+    return Math.max(6, Math.round(10 + minutes * 0.35 + Math.max(0, player.form) * 0.8));
+  }
+
+  function growthInfo(player = stateContainer.state.player) {
+    const needed = growthNeeded(player);
+    const remaining = Math.max(0, needed - player.xp);
+    const atCap = player.overall >= player.potential;
+    const sessions = (gain) => (atCap ? null : Math.max(1, Math.ceil(remaining / Math.max(1, gain))));
+    return {
+      needed,
+      current: Math.min(player.xp, needed),
+      remaining,
+      percent: atCap ? 100 : clamp((player.xp / needed) * 100, 0, 100),
+      atCap,
+      normalSessions: sessions(averageTrainingGain("normal", player)),
+      intenseSessions: sessions(averageTrainingGain("intense", player)),
+      matchSessions: sessions(estimatedMatchGain(player)),
+      normalGain: averageTrainingGain("normal", player),
+      intenseGain: averageTrainingGain("intense", player),
+      matchGain: estimatedMatchGain(player)
+    };
+  }
+
+  function growthProgressText(player = stateContainer.state.player) {
+    const info = growthInfo(player);
+    if (info.atCap) {
+      return `当前已到潜力上限 ${player.potential}。成长经验会保留，赛季末突破潜力后才能继续转化为能力。`;
+    }
+    return `成长进度 ${info.current}/${info.needed}，还差 ${info.remaining} 点；预计常规训练 ${info.normalSessions} 次，强化训练 ${info.intenseSessions} 次，或有出场比赛约 ${info.matchSessions} 场触发下一次成长。`;
+  }
+
   function train(mode) {
     const state = stateContainer.state;
     if (state.trainedThisWeek) {
@@ -788,14 +849,14 @@
     state.trainedThisWeek = true;
     const gain = trainingGain(mode);
     const labels = { normal: "常规训练", intense: "强化训练", recovery: "恢复训练" };
-    addLog("positive", `${labels[mode]}完成，获得 ${gain} 点成长经验。疲劳现在是 ${state.player.fatigue}/100。`, "training");
+    addLog("positive", `${labels[mode]}完成，获得 ${gain} 点成长经验。${growthProgressText(state.player)}疲劳现在是 ${state.player.fatigue}/100。`, "training");
     saveGame(true);
     render();
   }
 
   function maybeImprovePlayer() {
     const player = stateContainer.state.player;
-    let needed = 95 + player.overall * 4;
+    let needed = growthNeeded(player);
     while (player.xp >= needed && player.overall < player.potential) {
       player.xp -= needed;
       const attributeKeys = Object.keys(player.attributes);
@@ -803,7 +864,7 @@
       const target = random() < 0.68 ? choice(priority) : choice(attributeKeys);
       player.attributes[target] = clamp(player.attributes[target] + 1, 1, 99);
       player.overall = Math.min(player.potential, calculateOverall(player.attributes, player.position));
-      needed = 95 + player.overall * 4;
+      needed = growthNeeded(player);
       player.value = calculateValue(player);
       player.wage = calculateWage(player, currentClub());
       addLog("positive", `训练和比赛积累开始兑现，你的${attributeLabel(target)}提升到 ${player.attributes[target]}，当前能力值 ${player.overall}。`, "training");
@@ -942,7 +1003,7 @@
 
     updateTable(own.league, match.home, match.away, score.homeGoals, score.awayGoals);
     const logType = won ? "positive" : drawn ? "info" : "negative";
-    const summary = `${resultText}。${contribution.text}`;
+    const summary = `${resultText}。${contribution.text}成长经验 +${contribution.xp}。${growthProgressText(player)}`;
     addLog(logType, summary, "match");
     if (detailed) {
       const commentary = buildCommentary(own, opponent, ownGoals, oppGoals, contribution, isHome, won, drawn);
@@ -1212,6 +1273,7 @@
     maybeNationalTeamCall();
     state.week += 1;
     state.trainedThisWeek = false;
+    maybeUpdateTransferWindowMarket();
     maybeCloseTransferWindow();
     saveGame(true);
     render();
@@ -1231,14 +1293,27 @@
     state.market.isOpen = true;
     state.market.windowType = type;
     state.market.offers = [];
+    state.market.lastOfferWeek = state.week;
     const label = type === "summer" ? "夏季转会窗" : "冬季转会窗";
     addLog("warning", `${label}开启。经纪人${state.agent.name}会把真实报价告诉你，但推荐不等于一定能成行。`, "market");
     simulateClubTransfers(type);
-    generateOffers(type);
-    if (state.market.offers.length === 0) {
+    const added = generateOffers(type, { append: false, reason: "open" });
+    if (added === 0) {
       addLog("info", `经纪人${state.agent.name}：目前还没有正式报价。你可以调整转会策略，但市场不会保证回应。`, "market");
     }
     saveGame(true);
+  }
+
+  function maybeUpdateTransferWindowMarket() {
+    const state = stateContainer.state;
+    if (!state.market.isOpen || !state.market.windowType) return;
+    if (state.week >= transferWindowEndWeek()) return;
+    if (state.market.lastOfferWeek === state.week) return;
+    state.market.lastOfferWeek = state.week;
+    const added = generateOffers(state.market.windowType, { append: true, reason: "weekly" });
+    if (added === 0 && random() < 0.35) {
+      addLog("info", `经纪人${state.agent.name}本周继续联系俱乐部，但暂时没有新的正式报价。`, "market");
+    }
   }
 
   function transferWindowEndWeek() {
@@ -1255,6 +1330,7 @@
     const label = state.market.windowType === "summer" ? "夏季转会窗" : "冬季转会窗";
     state.market.isOpen = false;
     state.market.windowType = null;
+    state.market.lastOfferWeek = null;
     state.market.offers = state.market.offers.filter((offer) => offer.status === "accepted");
     addLog("info", `${label}关闭。未完成的报价已经过期，接下来只能等下一次窗口。`, "market");
   }
@@ -1276,42 +1352,138 @@
     }
   }
 
-  function generateOffers(type) {
+  function generateOffers(type, options = {}) {
     const state = stateContainer.state;
     const player = state.player;
     const own = contractClub();
     const playingClub = currentClub();
     const marketIntent = state.market.strategy === "leave" ? "transfer" : state.market.strategy;
-    const interestBase = player.overall + (player.potential - player.overall) * 0.55 + player.reputation * 0.18 + state.attitudes.agent * 0.08;
-    let candidateClubs = CLUBS.filter((candidate) => candidate.id !== own.id && candidate.id !== playingClub.id);
-    candidateClubs = candidateClubs.filter((candidate) => {
-      if (marketIntent === "minutes") return candidate.rating <= player.overall + 20 && candidate.reputation <= own.reputation + 8;
-      if (marketIntent === "bigger") return candidate.reputation >= own.reputation - 2 && candidate.rating >= own.rating - 8;
-      if (marketIntent === "loan") return !player.parentClubId && candidate.rating <= player.overall + 16 && candidate.rating >= player.overall - 14;
-      if (marketIntent === "transfer") return candidate.rating >= player.overall - 10;
-      return candidate.reputation >= own.reputation - 14 && candidate.rating >= player.overall - 8;
-    });
-    candidateClubs = candidateClubs
+    const append = options.append === true;
+    const reason = options.reason || "open";
+    const targetKind = marketIntent === "loan" ? "seniorLoan" : "seniorTransfer";
+    if (!append) state.market.offers = [];
+
+    const evaluatedClubs = CLUBS.filter((candidate) => candidate.id !== own.id && candidate.id !== playingClub.id)
+      .filter((candidate) => candidateFitsMarket(candidate, marketIntent))
+      .filter((candidate) => !hasExistingMarketOffer(candidate.id, targetKind))
       .map((candidate) => {
-        const fit = 100 - Math.abs(candidate.rating - (player.overall + 12)) + (candidate.reputation - own.reputation) * 0.3;
-        const chance = clamp((interestBase + fit - candidate.reputation * 0.42) / 155, 0.02, 0.55);
-        return { candidate, chance };
-      })
+        const chance = marketOfferChance(candidate, marketIntent, type);
+        return { candidate, chance, attention: marketAttentionScore(candidate, marketIntent) };
+      });
+    const selectedClubs = evaluatedClubs
       .filter((entry) => random() < entry.chance)
-      .sort((a, b) => b.candidate.reputation - a.candidate.reputation)
-      .slice(0, randomInt(0, type === "summer" ? 3 : 2));
-    const seniorOffers = candidateClubs.map(({ candidate }) => (marketIntent === "loan" ? makeLoanOffer(candidate) : makeOffer(candidate)));
-    const academyOffers = generateAcademyPoachOffers(type);
-    state.market.offers = seniorOffers.concat(academyOffers);
-    state.market.offers.forEach((offer) => {
+      .sort((a, b) => b.chance + b.candidate.reputation * 0.002 - (a.chance + a.candidate.reputation * 0.002))
+      .slice(0, randomInt(0, append ? (type === "summer" ? 2 : 1) : type === "summer" ? 3 : 2));
+    const seniorOffers = selectedClubs.map(({ candidate }) => (marketIntent === "loan" ? makeLoanOffer(candidate) : makeOffer(candidate)));
+    const academyOffers = reason === "weekly" ? [] : generateAcademyPoachOffers(type);
+    const newOffers = seniorOffers.concat(academyOffers).filter((offer) => !hasExistingMarketOffer(offer.clubId, offer.kind));
+    state.market.offers = append ? state.market.offers.concat(newOffers) : newOffers;
+
+    newOffers.forEach((offer) => {
+      const prefix = reason === "weekly" ? "本周新动向：" : reason === "strategy" ? "经纪人重新询价：" : "";
       if (offer.kind === "academyPoach") {
-        addLog("warning", `经纪人${state.agent.name}：${club(offer.clubId).name}梯队想挖角你，方案是${offer.role}，培养补偿约 ${money(offer.fee)}。`, "market");
+        addLog("warning", `${prefix}经纪人${state.agent.name}：${club(offer.clubId).name}梯队想挖角你，方案是${offer.role}，培养补偿约 ${money(offer.fee)}。`, "market");
       } else if (offer.kind === "seniorLoan") {
-        addLog("positive", `经纪人${state.agent.name}：${club(offer.clubId).name}希望租借你到赛季末，定位${offer.role}，租借费约 ${money(offer.fee)}。`, "market");
+        addLog("positive", `${prefix}经纪人${state.agent.name}：${club(offer.clubId).name}希望租借你到赛季末，定位${offer.role}，租借费约 ${money(offer.fee)}。`, "market");
       } else {
-        addLog("positive", `经纪人${state.agent.name}：${club(offer.clubId).name}递交了报价，角色定位是${offer.role}，转会费约 ${money(offer.fee)}。`, "market");
+        addLog("positive", `${prefix}经纪人${state.agent.name}：${club(offer.clubId).name}递交了报价，角色定位是${offer.role}，转会费约 ${money(offer.fee)}。`, "market");
       }
     });
+    logScoutingInterest(evaluatedClubs, newOffers, marketIntent, reason);
+    return newOffers.length;
+  }
+
+  function hasExistingMarketOffer(clubId, kind) {
+    const offers = stateContainer.state.market.offers || [];
+    return offers.some((offer) => offer.clubId === clubId && offer.kind === kind);
+  }
+
+  function candidateFitsMarket(candidate, marketIntent) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const own = contractClub();
+    const abilityGap = candidate.rating - player.overall;
+    const playerTooBig = player.overall - candidate.rating;
+    const eliteCandidate = candidate.tier === "elite" || candidate.reputation >= 88;
+    const strongProspect = player.potential >= candidate.rating - (eliteCandidate ? 2 : 5);
+
+    if (playerTooBig > 14) return false;
+    if (marketIntent === "loan") {
+      if (player.parentClubId) return false;
+      if (playerTooBig > 12) return false;
+      return abilityGap <= (strongProspect ? 26 : 14) && abilityGap >= -12;
+    }
+    if (marketIntent === "minutes") {
+      return candidate.rating <= player.overall + 20 && candidate.reputation <= own.reputation + 8 && playerTooBig <= 12;
+    }
+    if (marketIntent === "bigger") {
+      return candidate.reputation >= own.reputation - 2 && candidate.rating >= own.rating - 8 && abilityGap <= (strongProspect ? 30 : 16);
+    }
+    if (marketIntent === "transfer") {
+      return abilityGap <= (strongProspect ? 32 : 16);
+    }
+    return candidate.reputation >= own.reputation - 14 && candidate.rating >= player.overall - 8 && abilityGap <= (strongProspect ? 28 : 18);
+  }
+
+  function marketOfferChance(candidate, marketIntent, type) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const abilityGap = candidate.rating - player.overall;
+    const playerTooBig = player.overall - candidate.rating;
+    const upside = Math.max(0, player.potential - player.overall);
+    const prospectFit = clamp((player.potential - candidate.rating + 8) / 28, 0, 1);
+    const currentReady = clamp((player.overall - candidate.rating + 14) / 30, 0, 1);
+    const agentPull = state.attitudes.agent / 100;
+    const reputationPull = player.reputation / 100;
+    const winterFactor = type === "winter" ? 0.75 : 1;
+    let chance;
+
+    if (marketIntent === "loan") {
+      const fit = clamp(1 - Math.abs(candidate.rating - (player.overall + 4)) / 28, 0, 1);
+      chance = 0.018 + fit * 0.22 + clamp(upside / 45, 0, 0.12) + agentPull * 0.035 + reputationPull * 0.03;
+      if (abilityGap > 18) chance *= Math.max(0.12, prospectFit * 0.55);
+      if (playerTooBig > 8) chance *= 0.35;
+    } else {
+      const fit = clamp(1 - Math.abs(candidate.rating - (player.overall + 8)) / 36, 0, 1);
+      chance = 0.015 + fit * 0.14 + currentReady * 0.08 + prospectFit * 0.1 + agentPull * 0.035 + reputationPull * 0.04;
+      if (marketIntent === "bigger") chance += 0.025;
+      if (marketIntent === "transfer") chance += 0.018;
+      if (abilityGap > 18) chance *= Math.max(0.08, prospectFit * 0.42);
+      if (playerTooBig > 8) chance *= 0.16;
+    }
+
+    if (candidate.tier === "elite" || candidate.reputation >= 88) {
+      if (player.overall < candidate.rating - 18) {
+        chance *= Math.max(0.06, prospectFit * 0.55);
+      } else {
+        chance *= 0.9;
+      }
+    }
+    if (candidate.tier === "small" && player.overall >= candidate.rating + 10) chance *= 0.12;
+    return clamp(chance * winterFactor, 0.003, marketIntent === "loan" ? 0.42 : 0.36);
+  }
+
+  function marketAttentionScore(candidate, marketIntent) {
+    const player = stateContainer.state.player;
+    const eliteCandidate = candidate.tier === "elite" || candidate.reputation >= 88;
+    if (!eliteCandidate) return 0;
+    if (player.overall >= candidate.rating - 12) return 0;
+    if (player.potential < candidate.rating - 4) return 0;
+    const intentBoost = marketIntent === "bigger" || marketIntent === "transfer" ? 8 : 0;
+    return player.potential - candidate.rating + intentBoost + player.reputation * 0.08;
+  }
+
+  function logScoutingInterest(entries, newOffers, marketIntent, reason) {
+    if (reason === "open" || random() > 0.48) return;
+    const offeredIds = new Set(newOffers.map((offer) => offer.clubId));
+    const watchers = entries
+      .filter((entry) => entry.attention > 0 && !offeredIds.has(entry.candidate.id))
+      .sort((a, b) => b.attention - a.attention)
+      .slice(0, 2)
+      .map((entry) => entry.candidate.name);
+    if (!watchers.length) return;
+    const label = marketIntent === "loan" ? "外租培养方案" : "长期潜力";
+    addLog("info", `经纪人${stateContainer.state.agent.name}：${watchers.join("、")}派球探继续观察你的${label}，但还没有递交正式报价。`, "market");
   }
 
   function makeOffer(targetClub) {
@@ -1404,7 +1576,13 @@
     };
     applyEffects(effects[strategy]);
     addLog("info", `你告诉经纪人：${labels[strategy]}。这会影响下个转会窗的询价方向，但不会保证任何俱乐部报价。`, "market");
-    if (state.market.isOpen) generateOffers(state.market.windowType);
+    if (state.market.isOpen) {
+      state.market.lastOfferWeek = state.week;
+      const added = generateOffers(state.market.windowType, { append: true, reason: "strategy" });
+      if (added === 0) {
+        addLog("info", `经纪人${state.agent.name}重新询价后，暂时没有新的正式报价。`, "market");
+      }
+    }
     saveGame(true);
     render();
   }
@@ -1563,6 +1741,214 @@
     }
   }
 
+  function recordSeasonHonors(context) {
+    const player = stateContainer.state.player;
+    recordCareerSeasonStats(player.season);
+    evaluateLeagueHonors(context);
+    evaluateEuropeanHonors(context);
+    evaluateInternationalHonors(context);
+  }
+
+  function recordCareerSeasonStats(season) {
+    const stats = stateContainer.state.player.careerStats;
+    stats.appearances += season.appearances;
+    stats.goals += season.goals;
+    stats.assists += season.assists;
+    stats.cleanSheets += season.cleanSheets;
+  }
+
+  function addHonor(category, title, subtitle, tier = "standard", meta = {}) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const seasonYear = meta.seasonYear ?? state.seasonYear;
+    const id = `${seasonYear}-${category}-${title}-${meta.competition || ""}`;
+    if (player.honors.some((honor) => honor.id === id)) return false;
+    const honor = {
+      id,
+      category,
+      title,
+      subtitle,
+      tier,
+      seasonYear,
+      date: `${seasonYear}/${String(seasonYear + 1).slice(2)}`,
+      meta
+    };
+    player.honors.unshift(honor);
+    if (title.includes("冠军") || title.includes("升级")) player.careerStats.trophies += 1;
+    if (["金靴", "金球", "最佳", "金手套"].some((word) => title.includes(word))) {
+      player.careerStats.personalAwards += 1;
+    }
+    player.reputation = clamp(player.reputation + (tier === "legend" ? 6 : tier === "gold" ? 3 : 1), 0, 100);
+    addLog("positive", `荣誉入账：${title}。${subtitle}`, "honors");
+    return true;
+  }
+
+  function evaluateLeagueHonors({ club: own, rank, qualification, avgRating, seasonYear }) {
+    const player = stateContainer.state.player;
+    const season = player.season;
+    const league = LEAGUES[own.league];
+    if (!league) return;
+
+    if (rank === 1) {
+      addHonor("club", `${league.name}冠军`, `${own.name}以联赛第 1 名结束赛季。`, "gold", { competition: league.name, seasonYear });
+    } else if (qualification === "升级") {
+      addHonor("club", `${league.name}升级`, `${own.name}拿到直接升级资格。`, "gold", { competition: league.name, seasonYear });
+    } else if (qualification === "升级附加赛" && random() < 0.42) {
+      addHonor("club", `${league.name}升级附加赛冠军`, `${own.name}通过附加赛完成升级。`, "gold", { competition: league.name, seasonYear });
+    }
+
+    const leagueGoalLine = league.level > 1 ? 16 : 21;
+    const outputScore = season.goals + season.assists * 0.55 + Math.max(0, avgRating - 6.8) * 4;
+    if (positionLine(player.position) !== "goalkeeper" && season.goals >= leagueGoalLine) {
+      addHonor("personal", `${league.name}金靴`, `${season.goals} 粒联赛进球领跑射手榜。`, "gold", { competition: league.name, goals: season.goals, seasonYear });
+    }
+    if (positionLine(player.position) === "goalkeeper" && season.cleanSheets >= (league.level > 1 ? 11 : 14)) {
+      addHonor("personal", `${league.name}金手套`, `${season.cleanSheets} 场零封成为联赛最佳门将。`, "gold", { competition: league.name, cleanSheets: season.cleanSheets, seasonYear });
+    }
+    if (season.appearances >= 15 && avgRating >= 7.15) {
+      addHonor("personal", `${league.name}赛季最佳阵容`, `场均评分 ${avgRating.toFixed(2)}，入选联赛最佳阵容。`, "standard", { competition: league.name, seasonYear });
+    }
+    if (season.appearances >= 18 && avgRating >= 7.38 && outputScore >= 18) {
+      addHonor("personal", `${league.name}金球`, `赛季 ${season.goals} 球 ${season.assists} 助攻，场均评分 ${avgRating.toFixed(2)}。`, "gold", { competition: league.name, seasonYear });
+    }
+    if (league.level === 1 && season.goals >= 30) {
+      addHonor("personal", "欧洲金靴", `${season.goals} 粒联赛进球让你登顶欧洲射手榜。`, "legend", { competition: "欧洲联赛", goals: season.goals, seasonYear });
+    }
+    const ballonScore = player.overall * 0.62 + avgRating * 8 + season.goals * 0.48 + season.assists * 0.32 + player.reputation * 0.22 + (rank === 1 ? 8 : 0);
+    if (ballonScore >= 122 && random() < clamp((ballonScore - 112) / 28, 0.18, 0.82)) {
+      addHonor("personal", "金球奖", `你凭借俱乐部与个人表现被评为年度世界最佳球员。`, "legend", { competition: "世界足坛", score: Math.round(ballonScore), seasonYear });
+    }
+  }
+
+  function evaluateEuropeanHonors({ club: own, rank, qualification, avgRating, seasonYear }) {
+    const player = stateContainer.state.player;
+    const league = LEAGUES[own.league];
+    if (!league || league.level !== 1) return;
+
+    const competition = europeanCompetitionForSeason(own.league, rank, qualification);
+    if (!competition) return;
+    const goals = estimateCupGoals(competition, avgRating);
+    player.careerStats.europeanGoals += goals;
+    if (competition === "欧冠") player.careerStats.uclGoals += goals;
+
+    const titleChance = clamp((own.rating - 80) * 0.025 + (player.overall - 78) * 0.018 + (avgRating - 6.8) * 0.12 + goals * 0.012, 0.02, competition === "欧冠" ? 0.28 : 0.38);
+    if (random() < titleChance) {
+      addHonor("continental", `${competition}冠军`, `${own.name}在${competition}淘汰赛中走到最后，你贡献 ${goals} 球。`, "legend", { competition, goals, seasonYear });
+    }
+    const goldenBootLine = competition === "欧冠" ? 9 : competition === "欧联" ? 8 : 7;
+    if (positionLine(player.position) !== "goalkeeper" && goals >= goldenBootLine) {
+      addHonor("personal", `${competition}金靴`, `${goals} 粒进球成为本赛季${competition}最佳射手。`, "legend", { competition, goals, seasonYear });
+    }
+    if (avgRating >= 7.45 && goals >= Math.max(4, goldenBootLine - 4)) {
+      addHonor("personal", `${competition}最佳球员`, `你在${competition}中贡献 ${goals} 球，关键战表现突出。`, "gold", { competition, goals, seasonYear });
+    }
+  }
+
+  function europeanCompetitionForSeason(leagueId, rank, qualification) {
+    const rules = effectiveRules(leagueId);
+    if (!rules) return null;
+    const uclLine = (rules.ucl || 0) + (rules.uclQ || 0);
+    const uelLine = uclLine + (rules.uel || 0);
+    const ueclLine = uelLine + (rules.uecl || 0);
+    if (rank <= uclLine || ["欧冠", "欧冠资格赛"].includes(qualification)) return "欧冠";
+    if (rank <= uelLine || qualification === "欧联") return "欧联";
+    if (rank <= ueclLine || qualification === "欧协联") return "欧协联";
+    return null;
+  }
+
+  function estimateCupGoals(competition, avgRating) {
+    const player = stateContainer.state.player;
+    if (positionLine(player.position) === "goalkeeper") return 0;
+    const season = player.season;
+    const factor = competition === "欧冠" ? 0.34 : competition === "欧联" ? 0.28 : 0.24;
+    const roleBoost = ["主力", "租借主力"].includes(player.role) ? 1.15 : player.role === "轮换" ? 0.82 : 0.55;
+    const ratingBoost = clamp(avgRating - 6.5, 0, 1.8);
+    return Math.max(0, Math.round(season.goals * factor * roleBoost + ratingBoost + randomInt(-1, 2)));
+  }
+
+  function evaluateInternationalHonors({ avgRating, seasonYear }) {
+    const player = stateContainer.state.player;
+    const summerYear = seasonYear + 1;
+    const tournaments = internationalTournamentsForYear(player.nationality, summerYear);
+    tournaments.forEach((tournament) => simulateInternationalTournament(tournament, avgRating, seasonYear));
+  }
+
+  function internationalTournamentsForYear(nationality, year) {
+    const conf = nationConfederation(nationality);
+    const tournaments = [];
+    if ((year - 2026) % 4 === 0) tournaments.push({ name: "世界杯", year, global: true });
+    if (conf === "UEFA" && (year - 2028) % 4 === 0) tournaments.push({ name: "欧洲杯", year });
+    if (conf === "CONMEBOL" && (year - 2028) % 4 === 0) tournaments.push({ name: "美洲杯", year });
+    if (conf === "AFC" && (year - 2027) % 4 === 0) tournaments.push({ name: "亚洲杯", year });
+    if (conf === "CONCACAF" && year % 2 === 1) tournaments.push({ name: "中北美金杯赛", year });
+    return tournaments;
+  }
+
+  function nationConfederation(nationality) {
+    if (["英格兰", "法国", "德国", "西班牙", "意大利", "葡萄牙", "荷兰", "克罗地亚", "比利时"].includes(nationality)) return "UEFA";
+    if (["巴西", "阿根廷", "乌拉圭"].includes(nationality)) return "CONMEBOL";
+    if (["中国", "日本", "韩国"].includes(nationality)) return "AFC";
+    if (nationality === "美国") return "CONCACAF";
+    return "OTHER";
+  }
+
+  function nationStrength(nationality) {
+    return {
+      巴西: 92,
+      阿根廷: 91,
+      法国: 91,
+      英格兰: 88,
+      西班牙: 88,
+      德国: 87,
+      葡萄牙: 86,
+      荷兰: 85,
+      意大利: 84,
+      比利时: 83,
+      克罗地亚: 82,
+      乌拉圭: 80,
+      美国: 74,
+      日本: 73,
+      韩国: 72,
+      中国: 62
+    }[nationality] || 68;
+  }
+
+  function simulateInternationalTournament(tournament, avgRating, seasonYear) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const selectionChance = clamp((player.overall - 68) * 0.08 + (player.reputation - 45) * 0.012 + (avgRating - 6.6) * 0.12, 0.05, 0.96);
+    if (random() > selectionChance) return;
+
+    const appearances = randomInt(2, tournament.name === "世界杯" ? 7 : 6);
+    const goals = estimateInternationalGoals(appearances, avgRating);
+    player.national.caps += appearances;
+    player.national.goals += goals;
+    player.careerStats.internationalGoals += goals;
+    addLog("info", `${player.nationality}国家队征召你参加${tournament.year}年${tournament.name}，你出场 ${appearances} 次，打进 ${goals} 球。`, "national");
+
+    const strength = nationStrength(player.nationality);
+    const winChance = clamp((strength - 74) * 0.012 + (player.overall - 78) * 0.01 + (avgRating - 6.8) * 0.06 + goals * 0.01, 0.01, tournament.name === "世界杯" ? 0.28 : 0.42);
+    if (random() < winChance) {
+      addHonor("international", `${tournament.name}冠军`, `${player.nationality}在${tournament.year}年${tournament.name}夺冠，你贡献 ${goals} 球。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
+    }
+    const goldenBootLine = tournament.name === "世界杯" ? 6 : 5;
+    if (positionLine(player.position) !== "goalkeeper" && goals >= goldenBootLine) {
+      addHonor("personal", `${tournament.name}金靴`, `${goals} 粒进球成为${tournament.year}年${tournament.name}最佳射手。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
+    }
+    if (avgRating >= 7.45 && goals >= Math.max(3, goldenBootLine - 2)) {
+      addHonor("personal", `${tournament.name}金球`, `你在${tournament.year}年${tournament.name}中成为赛事最佳球员。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
+    }
+  }
+
+  function estimateInternationalGoals(appearances, avgRating) {
+    const player = stateContainer.state.player;
+    const line = positionLine(player.position);
+    if (line === "goalkeeper" || line === "defender") return 0;
+    const positionFactor = line === "attacker" ? 0.48 : 0.24;
+    const ratingFactor = clamp(avgRating - 6.2, 0, 2.4);
+    return Math.max(0, Math.round(appearances * positionFactor + ratingFactor + randomInt(-1, 2)));
+  }
+
   function finishSeason() {
     const state = stateContainer.state;
     const player = state.player;
@@ -1577,6 +1963,7 @@
     const avgRating = player.season.ratedMatches ? player.season.ratingTotal / player.season.ratedMatches : 0;
     player.reputation = clamp(player.reputation + Math.max(0, avgRating - 6.4) * 3 + player.season.goals * 0.18 + player.season.assists * 0.12, 0, 100);
     addLog("warning", `${state.seasonYear}/${String(state.seasonYear + 1).slice(2)} 赛季结束：${own.name}排名第 ${rank}，${qualification || "无额外资格"}。你的赛季数据：${player.season.appearances} 场 ${player.season.goals} 球 ${player.season.assists} 助攻。`, "career");
+    recordSeasonHonors({ club: own, rank, qualification, avgRating, seasonYear: state.seasonYear });
     maybeBreakPotential(avgRating, qualification);
     returnFromLoanIfNeeded();
     handleContractDecision();
@@ -1672,6 +2059,27 @@
     };
   }
 
+  function freshCareerStats() {
+    return {
+      appearances: 0,
+      goals: 0,
+      assists: 0,
+      cleanSheets: 0,
+      uclGoals: 0,
+      europeanGoals: 0,
+      internationalGoals: 0,
+      trophies: 0,
+      personalAwards: 0
+    };
+  }
+
+  function normalizeCareerStats(stats) {
+    const defaults = freshCareerStats();
+    Object.keys(defaults).forEach((key) => {
+      if (typeof stats[key] !== "number") stats[key] = defaults[key];
+    });
+  }
+
   function placementLabel(leagueId, rank, total) {
     const rules = effectiveRules(leagueId);
     if (!rules) return "";
@@ -1725,6 +2133,8 @@
       fatigue: 16,
       contractYears: origin === "academy" ? 1 : 2,
       season: freshSeasonStats(),
+      careerStats: freshCareerStats(),
+      honors: [],
       national: {
         caps: 0,
         goals: 0
@@ -1760,7 +2170,8 @@
         isOpen: false,
         windowType: null,
         strategy: "stay",
-        offers: []
+        offers: [],
+        lastOfferWeek: null
       },
       euroBonusLeagues: drawEuroBonusLeagues(),
       leagues: {},
@@ -1805,6 +2216,7 @@
     renderMatch();
     renderTable();
     renderMarket();
+    renderHonors();
     renderProfile();
     renderChoiceModal();
     window.__roadToKingState = state;
@@ -1861,9 +2273,43 @@
             <button class="secondary-button" type="button" data-action="train-intense" ${state.trainedThisWeek ? "disabled" : ""}>强化训练</button>
             <button class="secondary-button" type="button" data-action="train-recovery" ${state.trainedThisWeek ? "disabled" : ""}>恢复训练</button>
           </div>
+          ${renderGrowthPanel()}
           <p class="small-note">训练每周只能做一次。比赛、报价、征召和媒体事件由规则结算，不能手动指定结果。</p>
         </aside>
       </div>
+    `;
+  }
+
+  function renderGrowthPanel() {
+    const player = stateContainer.state.player;
+    const info = growthInfo(player);
+    if (info.atCap) {
+      return `
+        <section class="growth-panel">
+          <div class="section-heading compact-heading">
+            <h3>成长进度</h3>
+            <span class="tag gold">潜力上限</span>
+          </div>
+          <div class="growth-meter"><span style="width: 100%"></span></div>
+          <p class="small-note">当前能力已到 ${player.potential} 潜力上限。继续训练和比赛会保留成长经验，赛季末突破潜力后才能继续转化。</p>
+        </section>
+      `;
+    }
+    return `
+      <section class="growth-panel">
+        <div class="section-heading compact-heading">
+          <h3>成长进度</h3>
+          <strong>${info.current}/${info.needed}</strong>
+        </div>
+        <div class="growth-meter"><span style="width: ${info.percent}%"></span></div>
+        <div class="growth-grid">
+          <div><span>还差</span><strong>${info.remaining}</strong></div>
+          <div><span>常规训练</span><strong>${info.normalSessions} 次</strong></div>
+          <div><span>强化训练</span><strong>${info.intenseSessions} 次</strong></div>
+          <div><span>比赛预估</span><strong>${info.matchSessions} 场</strong></div>
+        </div>
+        <p class="small-note">下一次成长会先提升一项属性，综合能力可能随属性权重同步上涨。</p>
+      </section>
     `;
   }
 
@@ -2031,6 +2477,85 @@
         `;
       })
       .join("");
+  }
+
+  function renderHonors() {
+    const player = stateContainer.state.player;
+    const honors = player.honors || [];
+    const stats = player.careerStats || freshCareerStats();
+    const personalCount = honors.filter((honor) => honor.category === "personal").length;
+    const clubCount = honors.filter((honor) => honor.category === "club" || honor.category === "continental").length;
+    const internationalCount = honors.filter((honor) => honor.category === "international").length;
+    $("#honorsView").innerHTML = `
+      <div class="honors-layout">
+        <section class="honor-summary-grid">
+          <article class="honor-summary">
+            <span>奖杯</span>
+            <strong>${stats.trophies}</strong>
+            <small>俱乐部 / 国家队冠军</small>
+          </article>
+          <article class="honor-summary">
+            <span>个人奖</span>
+            <strong>${stats.personalAwards}</strong>
+            <small>金球、金靴、最佳阵容</small>
+          </article>
+          <article class="honor-summary">
+            <span>欧冠进球</span>
+            <strong>${stats.uclGoals}</strong>
+            <small>欧冠正赛累计</small>
+          </article>
+          <article class="honor-summary">
+            <span>国家队进球</span>
+            <strong>${stats.internationalGoals}</strong>
+            <small>${player.national.caps} 次国家队出场</small>
+          </article>
+        </section>
+
+        <section class="section">
+          <div class="section-heading">
+            <h3>个人荣誉室</h3>
+            <span class="tag gold">${honors.length} 项</span>
+          </div>
+          <div class="honor-splits">
+            <span>个人 ${personalCount}</span>
+            <span>俱乐部/洲际 ${clubCount}</span>
+            <span>国家队 ${internationalCount}</span>
+          </div>
+          <div class="honor-list">
+            ${renderHonorList(honors)}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderHonorList(honors) {
+    if (!honors.length) {
+      return `<p class="small-note">还没有正式荣誉。赛季末会根据联赛排名、个人数据、欧洲赛事和国家队大赛进行结算。</p>`;
+    }
+    return honors
+      .map(
+        (honor) => `
+          <article class="honor-card ${honor.tier || ""}">
+            <div>
+              <span>${honor.date || ""} · ${honorCategoryLabel(honor.category)}</span>
+              <h4>${escapeHtml(honor.title)}</h4>
+              <p>${escapeHtml(honor.subtitle || "")}</p>
+            </div>
+            <strong>${honor.tier === "legend" ? "传奇" : honor.tier === "gold" ? "金" : "荣誉"}</strong>
+          </article>
+        `
+      )
+      .join("");
+  }
+
+  function honorCategoryLabel(category) {
+    return {
+      personal: "个人",
+      club: "俱乐部",
+      continental: "洲际",
+      international: "国家队"
+    }[category] || "荣誉";
   }
 
   function renderProfile() {
