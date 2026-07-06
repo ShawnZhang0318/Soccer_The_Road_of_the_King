@@ -377,7 +377,8 @@
 
   const stateContainer = {
     state: null,
-    activeTab: "career"
+    activeTab: "career",
+    careerTimelineCollapsed: false
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -487,11 +488,28 @@
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     try {
-      return JSON.parse(raw);
+      return normalizeLoadedState(JSON.parse(raw));
     } catch (error) {
       console.warn(error);
       return null;
     }
+  }
+
+  function normalizeLoadedState(loaded) {
+    if (!loaded || !loaded.player) return loaded;
+    if (typeof loaded.player.parentClubId === "undefined") loaded.player.parentClubId = null;
+    if (typeof loaded.player.loanUntilSeasonYear === "undefined") loaded.player.loanUntilSeasonYear = null;
+    if (loaded.player.parentClubId && !club(loaded.player.parentClubId)) loaded.player.parentClubId = null;
+    if (!loaded.market) loaded.market = { isOpen: false, windowType: null, strategy: "stay", offers: [] };
+    if (loaded.market.strategy === "leave") loaded.market.strategy = "transfer";
+    if (!["stay", "minutes", "bigger", "loan", "transfer"].includes(loaded.market.strategy)) loaded.market.strategy = "stay";
+    if (!Array.isArray(loaded.market.offers)) loaded.market.offers = [];
+    if (!loaded.windows) loaded.windows = { summer: false, winter: false };
+    if (!loaded.leagues) loaded.leagues = {};
+    if (!Array.isArray(loaded.logs)) loaded.logs = [];
+    if (!loaded.player.season) loaded.player.season = freshSeasonStats();
+    if (typeof loaded.player.season.cleanSheets === "undefined") loaded.player.season.cleanSheets = 0;
+    return loaded;
   }
 
   function createAttributes(positionId, overall) {
@@ -714,6 +732,15 @@
 
   function currentClub() {
     return club(stateContainer.state.player.clubId);
+  }
+
+  function parentClub() {
+    const player = stateContainer.state?.player;
+    return player?.parentClubId ? club(player.parentClubId) : null;
+  }
+
+  function contractClub() {
+    return parentClub() || currentClub();
   }
 
   function getNextMatch() {
@@ -1252,14 +1279,16 @@
   function generateOffers(type) {
     const state = stateContainer.state;
     const player = state.player;
-    const own = currentClub();
-    const marketIntent = state.market.strategy;
+    const own = contractClub();
+    const playingClub = currentClub();
+    const marketIntent = state.market.strategy === "leave" ? "transfer" : state.market.strategy;
     const interestBase = player.overall + (player.potential - player.overall) * 0.55 + player.reputation * 0.18 + state.attitudes.agent * 0.08;
-    let candidateClubs = CLUBS.filter((candidate) => candidate.id !== own.id);
+    let candidateClubs = CLUBS.filter((candidate) => candidate.id !== own.id && candidate.id !== playingClub.id);
     candidateClubs = candidateClubs.filter((candidate) => {
       if (marketIntent === "minutes") return candidate.rating <= player.overall + 20 && candidate.reputation <= own.reputation + 8;
       if (marketIntent === "bigger") return candidate.reputation >= own.reputation - 2 && candidate.rating >= own.rating - 8;
-      if (marketIntent === "leave") return candidate.rating >= player.overall - 10;
+      if (marketIntent === "loan") return !player.parentClubId && candidate.rating <= player.overall + 16 && candidate.rating >= player.overall - 14;
+      if (marketIntent === "transfer") return candidate.rating >= player.overall - 10;
       return candidate.reputation >= own.reputation - 14 && candidate.rating >= player.overall - 8;
     });
     candidateClubs = candidateClubs
@@ -1271,12 +1300,14 @@
       .filter((entry) => random() < entry.chance)
       .sort((a, b) => b.candidate.reputation - a.candidate.reputation)
       .slice(0, randomInt(0, type === "summer" ? 3 : 2));
-    const seniorOffers = candidateClubs.map(({ candidate }) => makeOffer(candidate));
+    const seniorOffers = candidateClubs.map(({ candidate }) => (marketIntent === "loan" ? makeLoanOffer(candidate) : makeOffer(candidate)));
     const academyOffers = generateAcademyPoachOffers(type);
     state.market.offers = seniorOffers.concat(academyOffers);
     state.market.offers.forEach((offer) => {
       if (offer.kind === "academyPoach") {
         addLog("warning", `经纪人${state.agent.name}：${club(offer.clubId).name}梯队想挖角你，方案是${offer.role}，培养补偿约 ${money(offer.fee)}。`, "market");
+      } else if (offer.kind === "seniorLoan") {
+        addLog("positive", `经纪人${state.agent.name}：${club(offer.clubId).name}希望租借你到赛季末，定位${offer.role}，租借费约 ${money(offer.fee)}。`, "market");
       } else {
         addLog("positive", `经纪人${state.agent.name}：${club(offer.clubId).name}递交了报价，角色定位是${offer.role}，转会费约 ${money(offer.fee)}。`, "market");
       }
@@ -1297,6 +1328,23 @@
       wage: weeklyWage,
       role,
       years: randomInt(2, 5),
+      status: "open"
+    };
+  }
+
+  function makeLoanOffer(targetClub) {
+    const player = stateContainer.state.player;
+    const role = player.overall >= targetClub.rating - 8 ? "租借主力" : "租借轮换";
+    const fee = Math.round(player.value * (0.015 + random() * 0.04));
+    return {
+      id: `loan-${targetClub.id}-${Date.now()}-${randomInt(100, 999)}`,
+      kind: "seniorLoan",
+      clubId: targetClub.id,
+      fee: Math.max(20000, fee),
+      wage: player.wage,
+      wageShare: randomInt(40, 100),
+      role,
+      years: 0,
       status: "open"
     };
   }
@@ -1333,18 +1381,26 @@
 
   function setTransferStrategy(strategy) {
     const state = stateContainer.state;
+    if (strategy === "leave") strategy = "transfer";
+    if (strategy === "loan" && state.player.parentClubId) {
+      addLog("warning", "你已经处于外租期内，不能再次寻求外租。", "market");
+      render();
+      return;
+    }
     state.market.strategy = strategy;
     const labels = {
       stay: "保持现状",
       minutes: "优先出场时间",
       bigger: "寻找更大舞台",
-      leave: "主动寻求离队"
+      loan: "寻求外租",
+      transfer: "寻求转会"
     };
     const effects = {
       stay: { manager: 2, board: 1, agent: 0 },
       minutes: { manager: -1, board: 0, agent: 2 },
       bigger: { manager: -2, board: -1, agent: 3 },
-      leave: { manager: -5, board: -4, agent: 4 }
+      loan: { manager: -1, board: 0, agent: 3 },
+      transfer: { manager: -5, board: -4, agent: 4 }
     };
     applyEffects(effects[strategy]);
     addLog("info", `你告诉经纪人：${labels[strategy]}。这会影响下个转会窗的询价方向，但不会保证任何俱乐部报价。`, "market");
@@ -1363,9 +1419,15 @@
       render();
       return;
     }
+    if (offer.kind === "seniorLoan") {
+      acceptLoanOffer(offer);
+      saveGame(true);
+      render();
+      return;
+    }
     const target = club(offer.clubId);
     const player = state.player;
-    const own = currentClub();
+    const own = contractClub();
     const sellPressure = player.contractYears <= 1 ? 24 : 0;
     const feePressure = (offer.fee / Math.max(1, player.value) - 0.85) * 38;
     const boardMood = (100 - state.attitudes.board) * 0.15;
@@ -1382,6 +1444,29 @@
     offer.status = "accepted";
     saveGame(true);
     render();
+  }
+
+  function acceptLoanOffer(offer) {
+    const state = stateContainer.state;
+    const player = state.player;
+    if (player.parentClubId) {
+      offer.status = "rejected";
+      addLog("warning", "你已经完成外租，本窗口内不能再接受另一份外租邀请。", "market");
+      return;
+    }
+    const parent = contractClub();
+    const target = club(offer.clubId);
+    const developmentFit = clamp(20 - Math.abs(target.rating - (player.overall + 4)), -10, 18);
+    const minutesNeed = player.role === "未来计划" || player.role === "青训合同到期" ? 12 : 0;
+    const acceptance = clamp(46 + developmentFit + minutesNeed + (offer.fee / Math.max(1, player.value)) * 120 + state.attitudes.agent * 0.08, 12, 92);
+    if (random() * 100 > acceptance) {
+      offer.status = "rejected";
+      state.attitudes.manager = clamp(state.attitudes.manager - 1, 0, 100);
+      addLog("negative", `${parent.name}拒绝外租：教练组认为${target.name}的培养计划还不够合适。`, "market");
+      return;
+    }
+    loanPlayer(offer);
+    offer.status = "accepted";
   }
 
   function acceptAcademyPoachOffer(offer) {
@@ -1415,9 +1500,11 @@
   function transferPlayer(offer) {
     const state = stateContainer.state;
     const player = state.player;
-    const oldClub = currentClub();
+    const oldClub = contractClub();
     const target = club(offer.clubId);
     player.clubId = target.id;
+    player.parentClubId = null;
+    player.loanUntilSeasonYear = null;
     player.contractYears = offer.years;
     player.wage = offer.wage;
     player.role = offer.role;
@@ -1429,6 +1516,25 @@
     ensureLeagueSeason(target.league);
     catchUpLeague(target.league, state.week);
     addLog("positive", `转会完成：你从${oldClub.name}加盟${target.name}，合同 ${offer.years} 年，薪水 ${wage(offer.wage)}，定位${offer.role}。`, "market");
+  }
+
+  function loanPlayer(offer) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const parent = contractClub();
+    const target = club(offer.clubId);
+    player.parentClubId = parent.id;
+    player.loanUntilSeasonYear = state.seasonYear;
+    player.clubId = target.id;
+    player.role = offer.role;
+    player.reputation = clamp(player.reputation + 1.5, 0, 100);
+    state.attitudes.manager = offer.role === "租借主力" ? 61 : 54;
+    state.attitudes.board = 55;
+    state.attitudes.fans = clamp(42 + player.reputation * 0.2, 0, 100);
+    state.attitudes.teammates = 50;
+    ensureLeagueSeason(target.league);
+    catchUpLeague(target.league, state.week);
+    addLog("positive", `外租完成：你从${parent.name}租借加盟${target.name}至赛季末，定位${offer.role}。母队合同和薪水保持不变。`, "market");
   }
 
   function catchUpLeague(leagueId, weekTarget) {
@@ -1471,6 +1577,8 @@
     const avgRating = player.season.ratedMatches ? player.season.ratingTotal / player.season.ratedMatches : 0;
     player.reputation = clamp(player.reputation + Math.max(0, avgRating - 6.4) * 3 + player.season.goals * 0.18 + player.season.assists * 0.12, 0, 100);
     addLog("warning", `${state.seasonYear}/${String(state.seasonYear + 1).slice(2)} 赛季结束：${own.name}排名第 ${rank}，${qualification || "无额外资格"}。你的赛季数据：${player.season.appearances} 场 ${player.season.goals} 球 ${player.season.assists} 助攻。`, "career");
+    maybeBreakPotential(avgRating, qualification);
+    returnFromLoanIfNeeded();
     handleContractDecision();
     state.seasonYear += 1;
     state.week = 0;
@@ -1483,6 +1591,41 @@
     player.season = freshSeasonStats();
     addLog("info", euroBonusSummary(), "table");
     saveGame(true);
+  }
+
+  function maybeBreakPotential(avgRating, qualification) {
+    const player = stateContainer.state.player;
+    const season = player.season;
+    if (player.potential >= 99 || season.ratedMatches < 8) return;
+    const nearCeilingBonus = player.overall >= player.potential - 2 ? 9 : player.overall >= player.potential - 5 ? 4 : 0;
+    const outputBonus = Math.min(10, season.goals * 0.35 + season.assists * 0.28 + season.cleanSheets * 0.45);
+    const qualificationBonus = ["欧冠", "欧冠资格赛", "欧联", "欧协联", "升级"].includes(qualification) ? 4 : qualification === "升级附加赛" ? 2 : 0;
+    const agePenalty = Math.max(0, player.age - 24) * 2.2;
+    const chance = clamp((avgRating - 6.85) * 18 + Math.min(10, season.appearances * 0.42) + outputBonus + qualificationBonus + nearCeilingBonus - agePenalty, 0, 28);
+    if (random() * 100 >= chance) return;
+    const oldPotential = player.potential;
+    const extraPointChance = avgRating >= 7.45 && chance >= 18 ? 0.24 : 0.08;
+    const gain = random() < extraPointChance ? 2 : 1;
+    player.potential = Math.min(99, player.potential + gain);
+    player.value = calculateValue(player);
+    addLog("positive", `突破潜力：这个赛季的表现让外界重新评估了你的上限，潜力从 ${oldPotential} 提升到 ${player.potential}。`, "training");
+  }
+
+  function returnFromLoanIfNeeded() {
+    const state = stateContainer.state;
+    const player = state.player;
+    if (!player.parentClubId) return;
+    const loanClub = currentClub();
+    const parent = club(player.parentClubId);
+    player.clubId = parent.id;
+    player.parentClubId = null;
+    player.loanUntilSeasonYear = null;
+    player.role = player.overall >= parent.rating - 8 ? "轮换" : "未来计划";
+    state.attitudes.manager = 54;
+    state.attitudes.board = 56;
+    state.attitudes.fans = clamp(46 + player.reputation * 0.2, 0, 100);
+    state.attitudes.teammates = 52;
+    addLog("info", `租借期结束：你结束在${loanClub.name}的外租，回到母队${parent.name}。新赛季定位暂定为${player.role}。`, "market");
   }
 
   function handleContractDecision() {
@@ -1566,6 +1709,8 @@
       age: 16,
       origin,
       clubId: startingClub.id,
+      parentClubId: null,
+      loanUntilSeasonYear: null,
       academyStatus: origin === "academy" ? "expiring" : "senior",
       role: origin === "academy" ? "青训合同到期" : "轮换",
       potential,
@@ -1668,11 +1813,12 @@
   function renderStatus() {
     const state = stateContainer.state;
     const player = state.player;
+    const parent = parentClub();
     const metrics = [
       ["能力", `${player.overall}`, `潜力 ${player.potential}`],
       ["位置", positionName(player.position), player.role],
       ["身价", money(player.value), wage(player.wage)],
-      ["合同", `${player.contractYears} 年`, currentClub().name],
+      ["合同", `${player.contractYears} 年`, parent ? `租借自${parent.name}` : currentClub().name],
       ["状态", `士气 ${player.morale}`, `疲劳 ${player.fatigue}`],
       ["下场", nextOpponentLabel(), fmtDate()]
     ];
@@ -1694,11 +1840,17 @@
     const windowDue = isTransferWindowDue();
     const primaryLabel = windowDue ? "处理转会窗" : "开始下场比赛";
     const secondaryLabel = windowDue ? "转会窗后再比赛" : "跳过直接看赛果";
+    const timelineCollapsed = stateContainer.careerTimelineCollapsed;
     $("#careerView").innerHTML = `
       <div class="two-column">
-        <section class="log-panel">
-          <h3>生涯时间线</h3>
-          ${renderLogs(state.logs)}
+        <section class="log-panel ${timelineCollapsed ? "is-collapsed" : ""}">
+          <div class="section-heading">
+            <h3>生涯时间线</h3>
+            <button class="ghost-button compact-button" type="button" data-action="toggle-career-timeline">
+              ${timelineCollapsed ? "展开" : "折叠"}
+            </button>
+          </div>
+          ${timelineCollapsed ? `<p class="small-note">时间线已折叠，点击展开查看事件。</p>` : renderLogs(state.logs)}
         </section>
         <aside class="action-panel">
           <h3>推进</h3>
@@ -1823,11 +1975,14 @@
 
   function renderMarket() {
     const state = stateContainer.state;
+    if (state.market.strategy === "leave") state.market.strategy = "transfer";
+    const loanDisabled = state.player.parentClubId ? "disabled" : "";
     const strategyLabels = {
       stay: "保持现状",
       minutes: "优先出场时间",
       bigger: "寻找更大舞台",
-      leave: "主动寻求离队"
+      loan: "寻求外租",
+      transfer: "寻求转会"
     };
     $("#marketView").innerHTML = `
       <div class="two-column">
@@ -1838,9 +1993,10 @@
             <button class="secondary-button" type="button" data-strategy="stay">保持现状</button>
             <button class="secondary-button" type="button" data-strategy="minutes">寻找出场时间</button>
             <button class="secondary-button" type="button" data-strategy="bigger">推荐给更大俱乐部</button>
-            <button class="danger-button" type="button" data-strategy="leave">主动寻求离队</button>
+            <button class="secondary-button" type="button" data-strategy="loan" ${loanDisabled}>寻求外租</button>
+            <button class="danger-button" type="button" data-strategy="transfer">寻求转会</button>
           </div>
-          <p class="small-note">推荐只会改变询价方向。俱乐部是否报价、母队是否放人、薪水和角色都由市场结算。</p>
+          <p class="small-note">外租会保留母队合同并在赛季末回归；转会会永久更换俱乐部、合同和薪水。俱乐部是否报价、母队是否放人和角色都由市场结算。</p>
         </section>
         <section class="section">
           <h3>正式报价</h3>
@@ -1858,14 +2014,18 @@
     return offers
       .map((offer, index) => {
         const target = club(offer.clubId);
-        const offerTitle = offer.kind === "academyPoach" ? `${target.name}梯队挖角` : target.name;
-        const feeLabel = offer.kind === "academyPoach" ? "培养补偿" : "转会费";
+        const offerTitle = offer.kind === "academyPoach" ? `${target.name}梯队挖角` : offer.kind === "seniorLoan" ? `${target.name}租借邀请` : target.name;
+        const detail =
+          offer.kind === "seniorLoan"
+            ? `${LEAGUES[target.league].name} · 租借费 ${money(offer.fee)} · 承担薪水 ${offer.wageShare}% · 至赛季末 · 定位 ${offer.role}`
+            : `${LEAGUES[target.league].name} · ${offer.kind === "academyPoach" ? "培养补偿" : "转会费"} ${money(offer.fee)} · ${wage(offer.wage)} · ${offer.years} 年 · 定位 ${offer.role}`;
+        const openLabel = offer.kind === "seniorLoan" ? "同意外租" : "同意个人条款";
         return `
           <article class="offer-card">
             <h4>${offerTitle}</h4>
-            <p>${LEAGUES[target.league].name} · ${feeLabel} ${money(offer.fee)} · ${wage(offer.wage)} · ${offer.years} 年 · 定位 ${offer.role}</p>
+            <p>${detail}</p>
             <button class="primary-button" type="button" data-offer="${index}" ${offer.status !== "open" ? "disabled" : ""}>
-              ${offer.status === "open" ? "同意个人条款" : offer.status === "rejected" ? "母队已拒绝" : "已接受"}
+              ${offer.status === "open" ? openLabel : offer.status === "rejected" ? "母队已拒绝" : "已接受"}
             </button>
           </article>
         `;
@@ -1878,12 +2038,13 @@
     const player = state.player;
     $("#profileView").innerHTML = `
       <div class="two-column">
-        <section class="section">
+        <section class="section profile-summary">
           <h3>球员档案</h3>
           <div class="match-line"><span>姓名</span><strong>${escapeHtml(player.name)}</strong></div>
           <div class="match-line"><span>年龄</span><strong>${player.age}</strong></div>
           <div class="match-line"><span>国籍</span><strong>${player.nationality}</strong></div>
           <div class="match-line"><span>俱乐部</span><strong>${currentClub().name}</strong></div>
+          ${player.parentClubId ? `<div class="match-line"><span>租借自</span><strong>${club(player.parentClubId).name}</strong></div>` : ""}
           <div class="match-line"><span>能力/潜力</span><strong>${player.overall}/${player.potential}</strong></div>
           <div class="match-line"><span>声望</span><strong>${Math.round(player.reputation)}</strong></div>
           <div class="pill-row">
@@ -1978,11 +2139,7 @@
       if (!imported || !imported.player || !imported.player.clubId) {
         throw new Error("Invalid save");
       }
-      if (!Array.isArray(imported.logs)) imported.logs = [];
-      if (!imported.leagues) imported.leagues = {};
-      if (!imported.market) imported.market = { isOpen: false, windowType: null, strategy: "stay", offers: [] };
-      if (!imported.windows) imported.windows = { summer: false, winter: false };
-      stateContainer.state = imported;
+      stateContainer.state = normalizeLoadedState(imported);
       if (!Array.isArray(stateContainer.state.euroBonusLeagues)) {
         stateContainer.state.euroBonusLeagues = drawEuroBonusLeagues();
       }
@@ -2019,6 +2176,10 @@
       if (target.dataset.action === "train-normal") train("normal");
       if (target.dataset.action === "train-intense") train("intense");
       if (target.dataset.action === "train-recovery") train("recovery");
+      if (target.dataset.action === "toggle-career-timeline") {
+        stateContainer.careerTimelineCollapsed = !stateContainer.careerTimelineCollapsed;
+        render();
+      }
       if (target.dataset.action === "export-save") exportSave();
       if (target.dataset.action === "import-save") importSave();
       if (target.dataset.action === "reset-save") resetSave();

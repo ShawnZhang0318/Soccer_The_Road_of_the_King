@@ -325,9 +325,32 @@ select:focus {
   margin-top: 10px;
 }
 
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.section-heading h3 {
+  margin: 0;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
 .log-panel {
   max-height: 620px;
   overflow: auto;
+}
+
+.log-panel.is-collapsed {
+  max-height: none;
+  overflow: visible;
 }
 
 .log-entry {
@@ -389,6 +412,34 @@ select:focus {
 
 .match-line strong {
   color: var(--text);
+}
+
+.profile-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-summary .match-line {
+  min-height: 44px;
+  border: 1px solid rgba(51, 66, 55, 0.74);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 10px 12px;
+}
+
+.profile-summary .match-line:nth-of-type(even) {
+  background: rgba(80, 200, 120, 0.055);
+}
+
+.profile-summary .match-line strong {
+  max-width: 62%;
+  line-height: 1.35;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.profile-summary .pill-row {
+  margin-top: 2px;
 }
 
 .table-wrap {
