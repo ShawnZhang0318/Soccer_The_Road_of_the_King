@@ -1034,12 +1034,44 @@
       const assistChance = clamp((player.attributes.passing + player.attributes.dribbling - 96) * minuteFactor * (line === "defender" ? 0.24 : 0.62), 2, 54);
       if (random() * 100 < assistChance + (rating - 7) * 8) assists += 1;
     }
-    const xp = Math.round(14 + minutes * 0.42 + Math.max(0, rating - 6) * 11 + goals * 18 + assists * 12 + saves * 4);
+    return { rating, goals, assists, saves, minutes };
+  }
+
+  function buildContributionText(minutes, rating, goals, assists, saves) {
     let text = `你出场 ${minutes} 分钟，评分 ${rating.toFixed(1)}`;
     if (goals || assists) text += `，贡献 ${goals} 球 ${assists} 助攻`;
     if (saves) text += `，完成 ${saves} 次扑救`;
-    text += "。";
-    return { rating, goals, assists, saves, xp, text };
+    return `${text}。`;
+  }
+
+  function finalizeMatchContribution(contribution, { won, drawn, ownGoals, oppGoals, isGoalkeeper }) {
+    if (contribution.rating === 0) {
+      return {
+        ...contribution,
+        xp: randomInt(1, 3),
+        text: contribution.text || "你没有获得出场机会。"
+      };
+    }
+
+    const { minutes, goals, assists, saves } = contribution;
+    let rating = contribution.rating;
+
+    rating += won ? 0.55 : drawn ? 0.18 : -0.15;
+    rating += goals * 0.82;
+    rating += assists * 0.38;
+    if (won && goals + assists > 0) rating += 0.25;
+    if (drawn && goals > 0) rating += 0.2;
+    if (!won && goals > 0 && goals >= ownGoals) rating += 0.7;
+    if (isGoalkeeper && oppGoals === 0) rating += 0.55;
+    rating = clamp(rating, 4.2, 9.8);
+
+    let xp = Math.round(14 + minutes * 0.42 + Math.max(0, rating - 6) * 11 + goals * 24 + assists * 16 + saves * 5);
+    if (won) xp += 15;
+    else if (drawn) xp += 6;
+    else if (goals || assists) xp += 10;
+
+    const text = buildContributionText(minutes, rating, goals, assists, saves);
+    return { ...contribution, rating, xp, text };
   }
 
   function simulateUserMatch(match, detailed) {
@@ -1069,6 +1101,16 @@
     const won = ownGoals > oppGoals;
     const drawn = ownGoals === oppGoals;
     const resultText = `${own.name} ${ownGoals}-${oppGoals} ${opponent.name}`;
+    Object.assign(
+      contribution,
+      finalizeMatchContribution(contribution, {
+        won,
+        drawn,
+        ownGoals,
+        oppGoals,
+        isGoalkeeper: positionLine(player.position) === "goalkeeper"
+      })
+    );
     player.season.appearances += minutes > 0 ? 1 : 0;
     player.season.goals += contribution.goals;
     player.season.assists += contribution.assists;
@@ -1154,8 +1196,9 @@
       leave: "寻求永久转会"
     };
     const isBench = contribution.rating === 0;
-    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7;
-    const goodGame = contribution.rating >= 7.8;
+    const hadContribution = contribution.goals > 0 || contribution.assists > 0;
+    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7 && !hadContribution;
+    const goodGame = contribution.rating >= 7.8 || (hadContribution && contribution.rating >= 6.8);
     const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
     const triggerChance = isBench || marketNoise ? 0.34 : 0.18;
     const trigger = goodGame || poorGame || random() < triggerChance;
@@ -1310,11 +1353,17 @@
         { tone: "positive", text: `${lead}数据博主晒出你的评分和关键贡献，认为你应该得到更稳定的比赛时间。` },
         { tone: "info", text: `${lead}转播嘉宾夸你在关键区域处理球冷静，社媒关注度明显上涨。` }
       );
-    } else if (contribution.rating <= 5.9) {
+    } else if (contribution.rating <= 5.9 && !contribution.goals && !contribution.assists) {
       pulses.push(
         { tone: "warning", text: `${lead}评论区对你的发挥有些不耐烦，尤其在几次丢失球权后批评声变多。` },
         { tone: "warning", text: `${lead}球迷电台讨论你是否被放在了不舒服的位置，但也提醒年轻球员必须更稳定。` },
         { tone: "warning", text: `${lead}赛后评分榜把你列在低位，经纪人建议你别被短期舆论带节奏。` }
+      );
+    } else if (!won && (contribution.goals || contribution.assists)) {
+      pulses.push(
+        { tone: "positive", text: `${lead}尽管输球，不少球迷仍认可你的${contribution.goals ? "进球" : "助攻"}贡献，认为你值得更多首发机会。` },
+        { tone: "info", text: `${lead}评论员说球队整体低迷，但你的关键表现是少数亮点。` },
+        { tone: "info", text: `${lead}社媒上有球迷剪辑你的个人集锦，讨论你是否被战术角色限制。` }
       );
     } else {
       pulses.push(
