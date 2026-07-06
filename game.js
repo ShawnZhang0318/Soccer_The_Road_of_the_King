@@ -863,12 +863,59 @@
     return `成长进度 ${info.current}/${info.needed}，还差 ${info.remaining} 点；预计常规训练 ${info.normalSessions} 次，强化训练 ${info.intenseSessions} 次，或有出场比赛约 ${info.matchSessions} 场触发下一次成长。`;
   }
 
+  function trainingStatusNotice(player = stateContainer.state.player) {
+    const fatigue = player.fatigue;
+    const morale = player.morale;
+    if (fatigue >= 90 && morale <= 30) {
+      return {
+        type: "danger",
+        text: `疲劳 ${fatigue}/100 且士气 ${morale}/100：现在继续强化训练风险很高，下一场更可能替补或低评分，建议先恢复训练。`
+      };
+    }
+    if (fatigue >= 90) {
+      return {
+        type: "danger",
+        text: `疲劳 ${fatigue}/100：已经接近极限，强化训练会继续累积疲劳，建议优先恢复训练。`
+      };
+    }
+    if (fatigue >= 75) {
+      return {
+        type: "warning",
+        text: `疲劳 ${fatigue}/100：偏高，会降低出场概率和比赛评分，强化训练前最好考虑恢复。`
+      };
+    }
+    if (morale <= 30) {
+      return {
+        type: "warning",
+        text: `士气 ${morale}/100：偏低，比赛状态和舆论承压，稳定训练与好表现会更重要。`
+      };
+    }
+    if (fatigue <= 45 && morale >= 65) {
+      return {
+        type: "positive",
+        text: `疲劳 ${fatigue}/100，士气 ${morale}/100：状态不错，可以根据成长进度选择常规或强化训练。`
+      };
+    }
+    return {
+      type: "info",
+      text: `当前疲劳 ${fatigue}/100，士气 ${morale}/100。强化训练成长更快，但会明显增加疲劳。`
+    };
+  }
+
   function train(mode) {
     const state = stateContainer.state;
     if (state.trainedThisWeek) {
       addLog("warning", "本周已经完成训练，教练组不允许你临时加练来堆能力。", "training");
       render();
       return;
+    }
+    if (mode === "intense" && (state.player.fatigue >= 85 || state.player.morale <= 25)) {
+      const confirmed = window.confirm(`当前疲劳 ${state.player.fatigue}/100，士气 ${state.player.morale}/100。继续强化训练可能影响下一场出场和评分，仍要继续吗？`);
+      if (!confirmed) {
+        addLog("info", "你取消了强化训练，教练组建议根据状态选择常规训练或恢复训练。", "training");
+        render();
+        return;
+      }
     }
     state.trainedThisWeek = true;
     const gain = trainingGain(mode);
@@ -2475,6 +2522,7 @@
     const primaryLabel = windowDue ? "处理转会窗" : "开始下场比赛";
     const secondaryLabel = windowDue ? "转会窗后再比赛" : "跳过直接看赛果";
     const timelineCollapsed = stateContainer.careerTimelineCollapsed;
+    const trainingNotice = trainingStatusNotice(state.player);
     $("#careerView").innerHTML = `
       <div class="two-column">
         <section class="log-panel ${timelineCollapsed ? "is-collapsed" : ""}">
@@ -2495,6 +2543,7 @@
             <button class="secondary-button" type="button" data-action="train-intense" ${state.trainedThisWeek ? "disabled" : ""}>强化训练</button>
             <button class="secondary-button" type="button" data-action="train-recovery" ${state.trainedThisWeek ? "disabled" : ""}>恢复训练</button>
           </div>
+          <p class="training-notice ${trainingNotice.type}">${escapeHtml(trainingNotice.text)}</p>
           ${renderGrowthPanel()}
           <p class="small-note">训练每周只能做一次。比赛、报价、征召和媒体事件由规则结算，不能手动指定结果。</p>
         </aside>

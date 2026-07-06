@@ -1,9 +1,9 @@
-const CACHE_NAME = "road-to-king-pwa-v12";
+const CACHE_NAME = "road-to-king-pwa-v13";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=20260706media1",
-  "./game.js?v=20260706media1",
+  "./styles.css?v=20260706training1",
+  "./game.js?v=20260706training1",
   "./manifest.webmanifest",
   "./icons/icon.svg",
   "./icons/icon-192.png",

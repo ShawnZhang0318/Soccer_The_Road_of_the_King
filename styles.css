@@ -393,6 +393,35 @@ select:focus {
   gap: 10px;
 }
 
+.training-notice {
+  margin: 10px 0 0;
+  border: 1px solid rgba(88, 166, 255, 0.32);
+  border-radius: 8px;
+  background: rgba(88, 166, 255, 0.08);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+  padding: 9px 10px;
+}
+
+.training-notice.positive {
+  border-color: rgba(80, 200, 120, 0.36);
+  background: rgba(80, 200, 120, 0.08);
+  color: #c9efd4;
+}
+
+.training-notice.warning {
+  border-color: rgba(230, 194, 92, 0.42);
+  background: rgba(230, 194, 92, 0.1);
+  color: #eadca9;
+}
+
+.training-notice.danger {
+  border-color: rgba(255, 107, 107, 0.48);
+  background: rgba(255, 107, 107, 0.1);
+  color: #f1c5c5;
+}
+
 .growth-panel {
   display: grid;
   gap: 10px;
