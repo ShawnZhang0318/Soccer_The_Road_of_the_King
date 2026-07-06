@@ -1683,11 +1683,32 @@
     applyEffects(choiceItem.effects);
     if (!choiceItem.outcome) {
       const prefix = choiceKind === "media" ? "你的回应" : "你的选择";
-      addLog(choiceItem.tone || "info", `${prefix}：“${choiceItem.label}” 影响已经结算。`, choiceItem.tag || "media");
+      const impact = formatChoiceEffects(choiceItem.effects);
+      addLog(choiceItem.tone || "info", `${prefix}：“${choiceItem.label}”${impact}。`, choiceItem.tag || "media");
     }
     state.pendingChoice = null;
     saveGame(true);
     render();
+  }
+
+  function formatChoiceEffects(effects) {
+    if (!effects) return "关系与状态暂无变化";
+    const labels = [
+      ["manager", "主帅"],
+      ["fans", "球迷"],
+      ["board", "董事会"],
+      ["teammates", "队友"],
+      ["agent", "经纪人"],
+      ["morale", "士气"],
+      ["fatigue", "疲劳"]
+    ];
+    const parts = labels
+      .filter(([key]) => typeof effects[key] === "number" && effects[key] !== 0)
+      .map(([key, label]) => {
+        const value = effects[key];
+        return `${label}${value > 0 ? "+" : ""}${value}`;
+      });
+    return parts.length ? `影响：${parts.join("，")}` : "关系与状态暂无变化";
   }
 
   function applyEffects(effects) {
