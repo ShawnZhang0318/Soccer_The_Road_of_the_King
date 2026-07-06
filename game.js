@@ -949,13 +949,20 @@
     const state = stateContainer.state;
     const player = state.player;
     if (minutes <= 0) {
+      const benchTexts = [
+        "你没有获得出场机会，只能在替补席旁完成热身。",
+        "你下半场一度被叫去热身，但教练最终没有换人。",
+        "镜头几次扫到你在替补席等待机会，终场前仍没能登场。",
+        "你整场都在场边保持热身，赛后只能把情绪带回训练场。",
+        "你没有被换上，但助教赛后提醒你下一周训练还会重新评估。"
+      ];
       return {
         rating: 0,
         goals: 0,
         assists: 0,
         saves: 0,
         xp: randomInt(1, 3),
-        text: "你没有获得出场机会，只能在替补席旁完成热身。"
+        text: choice(benchTexts)
       };
     }
     const line = positionLine(player.position);
@@ -1086,52 +1093,202 @@
   function maybeCreateMediaEvent(contribution, won, drawn, resultText) {
     const state = stateContainer.state;
     const player = state.player;
+    const own = currentClub();
     if (state.pendingChoice) return;
-    const trigger = contribution.rating >= 7.8 || contribution.rating <= 5.7 || random() < 0.16;
+    const strategyLabels = {
+      stay: "留队竞争",
+      minutes: "争取更多出场",
+      bigger: "等待更大舞台",
+      loan: "寻求外租",
+      transfer: "寻求永久转会",
+      leave: "寻求永久转会"
+    };
+    const isBench = contribution.rating === 0;
+    const poorGame = contribution.rating > 0 && contribution.rating <= 5.7;
+    const goodGame = contribution.rating >= 7.8;
+    const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
+    const triggerChance = isBench || marketNoise ? 0.34 : 0.18;
+    const trigger = goodGame || poorGame || random() < triggerChance;
     if (!trigger) {
       createSocialPulse(contribution, won, drawn, resultText);
       return;
     }
-    let prompt;
-    let choices;
-    if (contribution.rating >= 7.8) {
-      prompt = `赛后发布会，记者问：“你今天表现很亮眼，是不是已经证明自己该锁定首发？”`;
-      choices = [
-        { label: "强调团队：首发要靠每天训练争取。", effects: { manager: 3, fans: 1, teammates: 3, morale: 2 }, tone: "positive" },
-        { label: "自信回应：我就是为大场面而生。", effects: { manager: -1, fans: 4, teammates: -1, morale: 4 }, tone: "warning" },
-        { label: "回避问题：这些由教练决定。", effects: { manager: 1, fans: -1, teammates: 1, morale: 0 }, tone: "info" }
-      ];
-    } else if (contribution.rating > 0 && contribution.rating <= 5.7) {
-      prompt = `赛后采访区气氛不轻松，记者追问：“你今天几次处理球都比较挣扎，怎么看？”`;
-      choices = [
-        { label: "承担责任：我会把录像看完，下一场回应。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
-        { label: "解释身体：最近疲劳有点高，但这不是借口。", effects: { manager: 0, fans: -1, teammates: 1, morale: 0, fatigue: -5 }, tone: "info" },
-        { label: "强硬反击：外界不懂我的任务。", effects: { manager: -3, fans: -4, teammates: -2, morale: 2 }, tone: "negative" }
-      ];
-    } else {
-      prompt = `社交媒体上有人质疑你出场时间太少，经纪人建议你谨慎回应。`;
-      choices = [
-        { label: "低调发文：继续工作，机会会来的。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
-        { label: "保持沉默，把回应留给训练场。", effects: { manager: 1, fans: 0, teammates: 1, morale: 0 }, tone: "info" },
-        { label: "点赞一条批评教练的动态。", effects: { manager: -7, fans: 3, teammates: -3, morale: -1 }, tone: "negative" }
-      ];
+
+    const events = [];
+    if (goodGame) {
+      events.push(
+        {
+          title: "赛后发布会",
+          prompt: `赛后发布会，记者问：“你今天表现很亮眼，是不是已经证明自己该锁定首发？”`,
+          choices: [
+            { label: "强调团队：首发要靠每天训练争取。", effects: { manager: 3, fans: 1, teammates: 3, morale: 2 }, tone: "positive" },
+            { label: "自信回应：我就是为大场面而生。", effects: { manager: -1, fans: 4, teammates: -1, morale: 4 }, tone: "warning" },
+            { label: "回避问题：这些由教练决定。", effects: { manager: 1, fans: -1, teammates: 1, morale: 0 }, tone: "info" }
+          ]
+        },
+        {
+          title: "混采区追问",
+          prompt: `记者追问：“连续有高光表现后，你会不会觉得自己已经准备好去更大的舞台？”`,
+          choices: [
+            { label: `我现在只专注帮${own.name}赢球。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 1 }, tone: "positive" },
+            { label: "每个球员都想踢最高水平比赛，我也一样。", effects: { manager: -2, board: -1, fans: 3, agent: 3, morale: 3 }, tone: "warning" },
+            { label: "舞台不是说出来的，要靠下一场继续证明。", effects: { manager: 2, fans: 2, teammates: 1, morale: 2 }, tone: "positive" }
+          ]
+        }
+      );
     }
+
+    if (poorGame) {
+      events.push(
+        {
+          title: "赛后采访",
+          prompt: `赛后采访区气氛不轻松，记者追问：“你今天几次处理球都比较挣扎，怎么看？”`,
+          choices: [
+            { label: "承担责任：我会把录像看完，下一场回应。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+            { label: "解释身体：最近疲劳有点高，但这不是借口。", effects: { manager: 0, fans: -1, teammates: 1, morale: 0, fatigue: -5 }, tone: "info" },
+            { label: "强硬反击：外界不懂我的任务。", effects: { manager: -3, fans: -4, teammates: -2, morale: 2 }, tone: "negative" }
+          ]
+        },
+        {
+          title: "战术争议",
+          prompt: `专栏记者问：“你今天看起来不太适应这个位置，是状态问题还是战术任务限制了你？”`,
+          choices: [
+            { label: "我需要做得更好，位置不是理由。", effects: { manager: 3, fans: 1, teammates: 2, morale: 1 }, tone: "positive" },
+            { label: "有些任务外界看不见，但我会继续适应。", effects: { manager: 2, fans: -1, teammates: 1, morale: 0 }, tone: "info" },
+            { label: "我希望以后能踢更适合自己的角色。", effects: { manager: -3, board: -1, fans: 2, agent: 2, morale: 1 }, tone: "warning" }
+          ]
+        },
+        {
+          title: "舆论压力",
+          prompt: `网络上有人把失利归咎于你，记者问：“这些批评会不会影响你的信心？”`,
+          choices: [
+            { label: "批评我会听，但信心不会丢。", effects: { manager: 2, fans: 1, teammates: 1, morale: 2 }, tone: "positive" },
+            { label: "这就是职业足球，我会用训练回应。", effects: { manager: 2, fans: 0, teammates: 1, morale: 1 }, tone: "info" },
+            { label: "有些评论太不公平了。", effects: { manager: -1, fans: -3, teammates: -1, morale: -1 }, tone: "negative" }
+          ]
+        }
+      );
+    }
+
+    if (isBench) {
+      events.push(
+        {
+          title: "替补席话题",
+          prompt: `社交媒体上有人质疑你出场时间太少，记者问：“如果继续没机会，你会考虑外租或离队吗？”`,
+          choices: [
+            { label: `我尊重${own.name}的安排，但球员需要比赛。`, effects: { manager: -1, board: 0, fans: 1, agent: 3, morale: 2 }, tone: "warning" },
+            { label: "我会先把训练做好，机会来了必须抓住。", effects: { manager: 3, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
+            { label: "这些事情会交给经纪人评估。", effects: { manager: -2, board: -1, fans: 2, agent: 3, morale: 1 }, tone: "warning" }
+          ]
+        },
+        {
+          title: "主帅安排",
+          prompt: `赛后有记者问：“你整场坐在替补席，对主教练的用人安排是什么态度？”`,
+          choices: [
+            { label: "主帅有计划，我要做的是随时准备好。", effects: { manager: 4, teammates: 1, fans: 0, morale: 1 }, tone: "positive" },
+            { label: "当然不满意，但情绪不能影响更衣室。", effects: { manager: -1, teammates: 2, fans: 2, morale: 2 }, tone: "warning" },
+            { label: "这个问题也许你们应该问教练。", effects: { manager: -6, board: -2, fans: 3, morale: -1 }, tone: "negative" }
+          ]
+        }
+      );
+    }
+
+    if (marketNoise) {
+      const strategyLabel = strategyLabels[state.market.strategy] || "评估未来";
+      const loanLine = state.market.strategy === "loan" ? "外租不是后退，我更看重稳定上场和成长。" : "未来要看俱乐部、经纪人和我的竞技规划。";
+      events.push({
+        title: "转会窗追问",
+        prompt: `转会窗期间，记者问：“你的团队最近在${strategyLabel}，你是否已经考虑离开${own.name}？”`,
+        choices: [
+          { label: `我现在还是${own.name}球员，比赛优先。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 0 }, tone: "positive" },
+          { label: loanLine, effects: { manager: -2, board: -1, fans: 2, agent: 4, morale: 2 }, tone: "warning" },
+          { label: "如果有真正相信我的球队，我愿意听。", effects: { manager: -5, board: -2, fans: 3, agent: 4, morale: 3 }, tone: "warning" }
+        ]
+      });
+    }
+
+    if (random() < 0.45 || player.reputation >= 42) {
+      events.push({
+        title: "球迷频道",
+        prompt: `球迷频道连线采访问：“很多年轻球员都有梦想球队，你最喜欢哪支球队？”`,
+        choices: [
+          { label: `现在我只代表${own.name}，别的留给未来。`, effects: { manager: 3, board: 2, fans: 1, agent: -1, morale: 1 }, tone: "positive" },
+          { label: "我从小喜欢进攻足球，豪门当然让人向往。", effects: { manager: -2, fans: 4, agent: 2, morale: 2 }, tone: "warning" },
+          { label: "最喜欢能让我上场、信任我的球队。", effects: { manager: 0, fans: 2, agent: 3, morale: 2 }, tone: "info" }
+        ]
+      });
+    }
+
+    if (!events.length) {
+      events.push({
+        title: "赛后采访",
+        prompt: `记者问：“${resultText} 之后，你觉得自己下一阶段最需要提升什么？”`,
+        choices: [
+          { label: "稳定性。每周都要拿出同样强度。", effects: { manager: 2, fans: 1, teammates: 1, morale: 1 }, tone: "positive" },
+          { label: "身体和节奏，我还需要适应职业比赛。", effects: { manager: 1, fans: 0, teammates: 1, morale: 1, fatigue: -3 }, tone: "info" },
+          { label: "我需要更多上场时间来证明自己。", effects: { manager: -2, fans: 2, agent: 2, morale: 2 }, tone: "warning" }
+        ]
+      });
+    }
+
+    const event = choice(events);
     state.pendingChoice = {
       kind: "media",
-      title: "需要回应",
-      prompt,
-      choices
+      title: event.title,
+      prompt: event.prompt,
+      choices: event.choices
     };
   }
 
   function createSocialPulse(contribution, won, drawn, resultText) {
     const state = stateContainer.state;
-    let text = `社交媒体热度：${resultText} 后，`;
-    if (contribution.rating === 0) text += "球迷主要讨论你是否应该得到更多机会。";
-    else if (contribution.rating >= 7.4) text += "不少球迷开始剪辑你的高光片段。";
-    else if (contribution.rating <= 5.9) text += "评论区对你的发挥有些不耐烦。";
-    else text += won ? "舆论整体轻松，认为你踢得很成熟。" : drawn ? "评论比较中性，大家更关心球队排名。" : "舆论有些低沉，但还没有集中到你身上。";
-    addLog(contribution.rating <= 5.9 && contribution.rating > 0 ? "warning" : "info", text, "media");
+    const player = state.player;
+    const own = currentClub();
+    const pulses = [];
+    const lead = `社交媒体热度：${resultText} 后，`;
+
+    if (contribution.rating === 0) {
+      pulses.push(
+        { tone: "info", text: `${lead}球迷把镜头扫到你热身的片段剪出来，讨论你是否该得到更多机会。` },
+        { tone: "info", text: `${lead}当地记者提到你连续等待机会，认为接下来几周的训练态度会很关键。` },
+        { tone: "warning", text: `${lead}评论区有人建议你考虑外租，也有人认为年轻球员应该继续耐心等待。` },
+        { tone: "info", text: `${lead}球迷论坛开帖分析${positionName(player.position)}轮换顺位，你的名字被反复提到。` }
+      );
+    } else if (contribution.rating >= 7.4) {
+      pulses.push(
+        { tone: "info", text: `${lead}不少球迷开始剪辑你的高光片段，称你踢得越来越像一线队球员。` },
+        { tone: "positive", text: `${lead}数据博主晒出你的评分和关键贡献，认为你应该得到更稳定的比赛时间。` },
+        { tone: "info", text: `${lead}转播嘉宾夸你在关键区域处理球冷静，社媒关注度明显上涨。` }
+      );
+    } else if (contribution.rating <= 5.9) {
+      pulses.push(
+        { tone: "warning", text: `${lead}评论区对你的发挥有些不耐烦，尤其在几次丢失球权后批评声变多。` },
+        { tone: "warning", text: `${lead}球迷电台讨论你是否被放在了不舒服的位置，但也提醒年轻球员必须更稳定。` },
+        { tone: "warning", text: `${lead}赛后评分榜把你列在低位，经纪人建议你别被短期舆论带节奏。` }
+      );
+    } else {
+      pulses.push(
+        { tone: "info", text: `${lead}${won ? "舆论整体轻松，认为你踢得很成熟。" : drawn ? "评论比较中性，大家更关心球队排名。" : "舆论有些低沉，但还没有集中到你身上。"}` },
+        { tone: "info", text: `${lead}球迷更关注球队结果，你的表现被评价为中规中矩。` },
+        { tone: "info", text: `${lead}本地媒体给你的关键词是“稳定”和“还需要更多存在感”。` }
+      );
+    }
+
+    if (state.market.isOpen) {
+      pulses.push(
+        { tone: "info", text: `转会窗流言：有记者称经纪人${state.agent.name}仍在接触潜在下家，但正式报价才算数。` },
+        { tone: "warning", text: `网络评论开始猜测你是否会在窗口关闭前改变计划，${own.name}球迷希望你先专注比赛。` }
+      );
+    }
+
+    if (state.market.strategy === "loan") {
+      pulses.push({ tone: "info", text: `外租话题升温：球迷争论你是该留队等机会，还是去一支能承诺时间的球队练级。` });
+    } else if (state.market.strategy === "transfer" || state.market.strategy === "bigger") {
+      pulses.push({ tone: "warning", text: `转会话题升温：部分球迷担心你已经在考虑下一站，也有人觉得年轻球员需要更高舞台。` });
+    }
+
+    const pulse = choice(pulses);
+    addLog(pulse.tone, pulse.text, "media");
   }
 
   function createInitialAcademyNegotiation() {
