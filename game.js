@@ -791,16 +791,17 @@
 
   function trainingGain(mode) {
     const player = stateContainer.state.player;
-    const base = mode === "intense" ? randomInt(16, 26) : mode === "recovery" ? randomInt(3, 8) : randomInt(8, 16);
+    const base = mode === "intense" ? randomInt(18, 28) : mode === "recovery" ? randomInt(5, 10) : randomInt(9, 17);
     const gain = Math.round(base * growthGainMultiplier(player));
     if (mode === "intense") {
-      player.fatigue = clamp(player.fatigue + randomInt(8, 16), 0, 100);
-      player.morale = clamp(player.morale + randomInt(-2, 3), 0, 100);
+      player.fatigue = clamp(player.fatigue + randomInt(6, 12), 0, 100);
+      player.morale = clamp(player.morale + randomInt(0, 3), 0, 100);
     } else if (mode === "recovery") {
-      player.fatigue = clamp(player.fatigue - randomInt(12, 22), 0, 100);
-      player.morale = clamp(player.morale + randomInt(1, 4), 0, 100);
+      player.fatigue = clamp(player.fatigue - randomInt(22, 36), 0, 100);
+      player.morale = clamp(player.morale + randomInt(4, 8), 0, 100);
     } else {
-      player.fatigue = clamp(player.fatigue + randomInt(1, 7), 0, 100);
+      player.fatigue = clamp(player.fatigue + randomInt(0, 4), 0, 100);
+      player.morale = clamp(player.morale + randomInt(0, 2), 0, 100);
     }
     player.xp += gain;
     maybeImprovePlayer();
@@ -808,16 +809,16 @@
   }
 
   function growthNeeded(player = stateContainer.state.player) {
-    return 95 + player.overall * 4;
+    return 70 + player.overall * 3;
   }
 
   function growthGainMultiplier(player = stateContainer.state.player) {
     const potentialGap = Math.max(1, player.potential - player.overall);
-    return clamp(potentialGap / 18, 0.35, 1.2);
+    return clamp(potentialGap / 16, 0.45, 1.35);
   }
 
   function averageTrainingGain(mode, player = stateContainer.state.player) {
-    const base = mode === "intense" ? 21 : mode === "recovery" ? 5.5 : 12;
+    const base = mode === "intense" ? 23 : mode === "recovery" ? 7.5 : 13;
     return Math.max(1, Math.round(base * growthGainMultiplier(player)));
   }
 
@@ -832,7 +833,7 @@
       "青训合同到期": 12
     };
     const minutes = roleMinutes[player.role] || 28;
-    return Math.max(6, Math.round(10 + minutes * 0.35 + Math.max(0, player.form) * 0.8));
+    return Math.max(8, Math.round(14 + minutes * 0.42 + Math.max(0, player.form) * 0.9));
   }
 
   function growthInfo(player = stateContainer.state.player) {
@@ -898,7 +899,7 @@
     }
     return {
       type: "info",
-      text: `当前疲劳 ${fatigue}/100，士气 ${morale}/100。强化训练成长更快，但会明显增加疲劳。`
+      text: `当前疲劳 ${fatigue}/100，士气 ${morale}/100。强化训练成长更快，恢复训练能明显降低疲劳并稳定士气。`
     };
   }
 
@@ -1033,7 +1034,7 @@
       const assistChance = clamp((player.attributes.passing + player.attributes.dribbling - 96) * minuteFactor * (line === "defender" ? 0.24 : 0.62), 2, 54);
       if (random() * 100 < assistChance + (rating - 7) * 8) assists += 1;
     }
-    const xp = Math.round(10 + minutes * 0.35 + Math.max(0, rating - 6) * 10 + goals * 16 + assists * 10 + saves * 3);
+    const xp = Math.round(14 + minutes * 0.42 + Math.max(0, rating - 6) * 11 + goals * 18 + assists * 12 + saves * 4);
     let text = `你出场 ${minutes} 分钟，评分 ${rating.toFixed(1)}`;
     if (goals || assists) text += `，贡献 ${goals} 球 ${assists} 助攻`;
     if (saves) text += `，完成 ${saves} 次扑救`;
@@ -1076,16 +1077,18 @@
       player.season.ratingTotal += contribution.rating;
       player.season.ratedMatches += 1;
       player.form = clamp(player.form + (contribution.rating - 6.6) * 0.55 + (won ? 0.8 : drawn ? 0.1 : -0.8), -8, 8);
-      player.morale = clamp(player.morale + (won ? 4 : drawn ? 0 : -5) + (contribution.rating > 7.4 ? 4 : contribution.rating < 5.8 ? -4 : 0), 0, 100);
+      const resultMorale = won ? 4 : drawn ? 1 : -3;
+      const ratingMorale = contribution.rating > 7.4 ? 4 : contribution.rating < 5.8 ? -2 : contribution.rating < 6.2 ? -1 : 0;
+      player.morale = clamp(player.morale + resultMorale + ratingMorale, 0, 100);
       state.attitudes.manager = clamp(state.attitudes.manager + (contribution.rating - 6.5) * 1.6 + (won ? 1 : drawn ? 0 : -1), 0, 100);
       state.attitudes.fans = clamp(state.attitudes.fans + contribution.goals * 2.4 + contribution.assists * 1.6 + (won ? 1.2 : drawn ? 0 : -1.6), 0, 100);
       state.attitudes.teammates = clamp(state.attitudes.teammates + (contribution.rating - 6.5) * 0.9 + (contribution.assists ? 1.4 : 0), 0, 100);
     } else {
       player.form = clamp(player.form - 0.35, -8, 8);
-      player.morale = clamp(player.morale - 2, 0, 100);
+      player.morale = clamp(player.morale - 1, 0, 100);
       state.attitudes.manager = clamp(state.attitudes.manager - 0.5, 0, 100);
     }
-    player.fatigue = clamp(player.fatigue + Math.round(minutes * 0.28) + randomInt(2, 8), 0, 100);
+    player.fatigue = clamp(player.fatigue + Math.round(minutes * 0.2) + randomInt(1, 5), 0, 100);
     player.xp += contribution.xp;
     maybeImprovePlayer();
     player.value = calculateValue(player);
@@ -2227,7 +2230,7 @@
     const qualification = placementLabel(own.league, rank, table.length);
     player.contractYears -= 1;
     player.age += 1;
-    player.fatigue = clamp(player.fatigue - 32, 0, 100);
+    player.fatigue = clamp(player.fatigue - 45, 0, 100);
     player.form = clamp(player.form * 0.35, -8, 8);
     const avgRating = player.season.ratedMatches ? player.season.ratingTotal / player.season.ratedMatches : 0;
     player.reputation = clamp(player.reputation + Math.max(0, avgRating - 6.4) * 3 + player.season.goals * 0.18 + player.season.assists * 0.12, 0, 100);
