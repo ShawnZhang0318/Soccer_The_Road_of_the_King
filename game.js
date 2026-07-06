@@ -54,6 +54,32 @@
     { id: "ST", name: "中锋", line: "attacker" }
   ];
 
+  const OVERALL_WEIGHTS = {
+    GK: { goalkeeping: 0.64, physical: 0.12, passing: 0.1, pace: 0.08, defending: 0.06 },
+    CB: { defending: 0.38, physical: 0.22, pace: 0.14, passing: 0.12, dribbling: 0.08, shooting: 0.06 },
+    LB: { pace: 0.24, defending: 0.26, physical: 0.16, passing: 0.16, dribbling: 0.12, shooting: 0.06 },
+    RB: { pace: 0.24, defending: 0.26, physical: 0.16, passing: 0.16, dribbling: 0.12, shooting: 0.06 },
+    DM: { defending: 0.24, passing: 0.25, physical: 0.2, dribbling: 0.12, pace: 0.1, shooting: 0.09 },
+    CM: { passing: 0.3, dribbling: 0.2, physical: 0.15, defending: 0.13, pace: 0.12, shooting: 0.1 },
+    AM: { passing: 0.3, dribbling: 0.26, shooting: 0.2, pace: 0.12, physical: 0.08, defending: 0.04 },
+    LW: { pace: 0.26, dribbling: 0.28, shooting: 0.22, passing: 0.14, physical: 0.07, defending: 0.03 },
+    RW: { pace: 0.26, dribbling: 0.28, shooting: 0.22, passing: 0.14, physical: 0.07, defending: 0.03 },
+    ST: { shooting: 0.34, physical: 0.18, pace: 0.18, dribbling: 0.16, passing: 0.1, defending: 0.04 }
+  };
+
+  const ATTRIBUTE_PRIORITIES = {
+    GK: ["goalkeeping", "physical", "passing", "pace"],
+    CB: ["defending", "physical", "pace", "passing"],
+    LB: ["pace", "defending", "passing", "dribbling"],
+    RB: ["pace", "defending", "passing", "dribbling"],
+    DM: ["passing", "defending", "physical", "dribbling"],
+    CM: ["passing", "dribbling", "physical", "defending"],
+    AM: ["passing", "dribbling", "shooting", "pace"],
+    LW: ["dribbling", "pace", "shooting", "passing"],
+    RW: ["dribbling", "pace", "shooting", "passing"],
+    ST: ["shooting", "physical", "pace", "dribbling"]
+  };
+
   const PLAYER_NAME_POOL = [
     "马特奥",
     "伊桑",
@@ -505,6 +531,10 @@
     normalizeCareerStats(loaded.player.careerStats);
     if (!loaded.player.national) loaded.player.national = { caps: 0, goals: 0 };
     if (typeof loaded.player.national.goals !== "number") loaded.player.national.goals = 0;
+    if (loaded.version < 2 && loaded.player.attributes && loaded.player.position) {
+      loaded.player.overall = Math.min(loaded.player.potential || 99, calculateOverall(loaded.player.attributes, loaded.player.position));
+      loaded.version = 2;
+    }
     if (!loaded.market) loaded.market = { isOpen: false, windowType: null, strategy: "stay", offers: [] };
     if (loaded.market.strategy === "leave") loaded.market.strategy = "transfer";
     if (!["stay", "minutes", "bigger", "loan", "transfer"].includes(loaded.market.strategy)) loaded.market.strategy = "stay";
@@ -558,13 +588,7 @@
   }
 
   function calculateOverall(attributes, positionId) {
-    const line = positionLine(positionId);
-    const weights = {
-      goalkeeper: { goalkeeping: 0.62, physical: 0.12, passing: 0.1, pace: 0.08, defending: 0.08 },
-      defender: { defending: 0.35, physical: 0.2, pace: 0.16, passing: 0.14, dribbling: 0.1, shooting: 0.05 },
-      midfielder: { passing: 0.28, dribbling: 0.22, physical: 0.14, defending: 0.14, pace: 0.12, shooting: 0.1 },
-      attacker: { shooting: 0.28, dribbling: 0.24, pace: 0.2, passing: 0.12, physical: 0.1, defending: 0.06 }
-    }[line];
+    const weights = OVERALL_WEIGHTS[positionId] || OVERALL_WEIGHTS.CM;
     return Math.round(Object.entries(weights).reduce((sum, [key, weight]) => sum + attributes[key] * weight, 0));
   }
 
@@ -859,24 +883,36 @@
     let needed = growthNeeded(player);
     while (player.xp >= needed && player.overall < player.potential) {
       player.xp -= needed;
-      const attributeKeys = Object.keys(player.attributes);
-      const priority = attributePriority(player.position);
-      const target = random() < 0.68 ? choice(priority) : choice(attributeKeys);
+      const attributeKeys = Object.keys(player.attributes).filter((key) => player.attributes[key] < 99);
+      if (!attributeKeys.length) break;
+      const priority = attributePriority(player.position).filter((key) => player.attributes[key] < 99);
+      const target = random() < 0.68 && priority.length ? choice(priority) : choice(attributeKeys);
+      const oldAttribute = player.attributes[target];
+      const oldOverall = player.overall;
       player.attributes[target] = clamp(player.attributes[target] + 1, 1, 99);
       player.overall = Math.min(player.potential, calculateOverall(player.attributes, player.position));
       needed = growthNeeded(player);
       player.value = calculateValue(player);
       player.wage = calculateWage(player, currentClub());
-      addLog("positive", `训练和比赛积累开始兑现，你的${attributeLabel(target)}提升到 ${player.attributes[target]}，当前能力值 ${player.overall}。`, "training");
+      const overallText = player.overall > oldOverall ? `综合能力 ${oldOverall} → ${player.overall}` : `综合能力暂时维持 ${player.overall}`;
+      addLog("positive", `成长兑现：${attributeLabel(target)} +1（${oldAttribute} → ${player.attributes[target]}），${overallText}。`, "training");
     }
   }
 
+  function attributePriorityLabels(positionId) {
+    return attributePriority(positionId).map(attributeLabel).join("、");
+  }
+
+  function overallWeightLabels(positionId) {
+    const weights = OVERALL_WEIGHTS[positionId] || OVERALL_WEIGHTS.CM;
+    return Object.entries(weights)
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, weight]) => `${attributeLabel(key)}${Math.round(weight * 100)}%`)
+      .join("、");
+  }
+
   function attributePriority(positionId) {
-    const line = positionLine(positionId);
-    if (line === "goalkeeper") return ["goalkeeping", "physical", "passing"];
-    if (line === "defender") return ["defending", "physical", "pace", "passing"];
-    if (line === "midfielder") return ["passing", "dribbling", "physical", "defending"];
-    return ["shooting", "dribbling", "pace", "passing"];
+    return ATTRIBUTE_PRIORITIES[positionId] || ATTRIBUTE_PRIORITIES.CM;
   }
 
   function attributeLabel(key) {
@@ -1634,17 +1670,46 @@
     }
     const parent = contractClub();
     const target = club(offer.clubId);
-    const developmentFit = clamp(20 - Math.abs(target.rating - (player.overall + 4)), -10, 18);
-    const minutesNeed = player.role === "未来计划" || player.role === "青训合同到期" ? 12 : 0;
-    const acceptance = clamp(46 + developmentFit + minutesNeed + (offer.fee / Math.max(1, player.value)) * 120 + state.attitudes.agent * 0.08, 12, 92);
-    if (random() * 100 > acceptance) {
+    const review = evaluateLoanApproval(offer, parent, target);
+    if (random() * 100 > review.acceptance) {
       offer.status = "rejected";
       state.attitudes.manager = clamp(state.attitudes.manager - 1, 0, 100);
-      addLog("negative", `${parent.name}拒绝外租：教练组认为${target.name}的培养计划还不够合适。`, "market");
+      addLog("negative", `${parent.name}拒绝外租：${review.reason}`, "market");
       return;
     }
     loanPlayer(offer);
     offer.status = "accepted";
+  }
+
+  function evaluateLoanApproval(offer, parent, target) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const roleScore = offer.role === "租借主力" ? 30 : 12;
+    const needsMinutes = player.role === "未来计划" || player.role === "青训合同到期" || player.overall < parent.rating - 10;
+    const minutesNeed = needsMinutes ? 14 : 4;
+    const levelGap = target.rating - player.overall;
+    const levelFit = clamp(18 - Math.abs(levelGap - 4) * 1.5, -18, 18);
+    const leagueFit = LEAGUES[target.league]?.level <= LEAGUES[parent.league]?.level + 1 ? 5 : -5;
+    const reputationFit = clamp((target.reputation - 62) * 0.16, -8, 8);
+    const feeScore = clamp((offer.fee / Math.max(1, player.value)) * 180, 0, 14);
+    const relationshipScore = (state.attitudes.manager - 50) * 0.12 + (state.attitudes.board - 50) * 0.1 + (state.attitudes.agent - 50) * 0.08;
+    const keepPenalty = player.overall >= parent.rating - 4 ? 18 : player.overall >= parent.rating - 8 ? 8 : 0;
+    const acceptance = clamp(34 + roleScore + minutesNeed + levelFit + leagueFit + reputationFit + feeScore + relationshipScore - keepPenalty, offer.role === "租借主力" ? 42 : 18, 96);
+
+    let reason = "教练组仍希望你留队竞争位置。";
+    if (keepPenalty >= 18) {
+      reason = "母队认为你已经接近一线队轮换水平，暂时不想放你离队。";
+    } else if (levelGap > 18) {
+      reason = `${target.name}整体强度太高，母队担心你即使名义上是${offer.role}，实际出场仍无法保证。`;
+    } else if (levelGap < -12) {
+      reason = `${target.name}比赛强度偏低，母队认为这段外租对成长帮助有限。`;
+    } else if (offer.role !== "租借主力") {
+      reason = `${target.name}只承诺租借轮换，母队认为出场时间还不够稳定。`;
+    } else if (feeScore < 3 && state.attitudes.board < 48) {
+      reason = "董事会认为租借补偿和薪水承担比例不足。";
+    }
+
+    return { acceptance, reason };
   }
 
   function acceptAcademyPoachOffer(offer) {
@@ -2146,7 +2211,7 @@
       player.wage = randomInt(800, 2500);
     }
     return {
-      version: 1,
+      version: 2,
       seed: seedFromTime(),
       seasonYear: 2026,
       week: 0,
@@ -2290,6 +2355,11 @@
             <h3>成长进度</h3>
             <span class="tag gold">潜力上限</span>
           </div>
+          <div class="growth-overall">
+            <span>综合能力</span>
+            <strong>${player.overall}</strong>
+            <small>潜力 ${player.potential}</small>
+          </div>
           <div class="growth-meter"><span style="width: 100%"></span></div>
           <p class="small-note">当前能力已到 ${player.potential} 潜力上限。继续训练和比赛会保留成长经验，赛季末突破潜力后才能继续转化。</p>
         </section>
@@ -2301,6 +2371,11 @@
           <h3>成长进度</h3>
           <strong>${info.current}/${info.needed}</strong>
         </div>
+        <div class="growth-overall">
+          <span>综合能力</span>
+          <strong>${player.overall}</strong>
+          <small>潜力 ${player.potential}</small>
+        </div>
         <div class="growth-meter"><span style="width: ${info.percent}%"></span></div>
         <div class="growth-grid">
           <div><span>还差</span><strong>${info.remaining}</strong></div>
@@ -2308,7 +2383,7 @@
           <div><span>强化训练</span><strong>${info.intenseSessions} 次</strong></div>
           <div><span>比赛预估</span><strong>${info.matchSessions} 场</strong></div>
         </div>
-        <p class="small-note">下一次成长会先提升一项属性，综合能力可能随属性权重同步上涨。</p>
+        <p class="small-note">满格后固定让 1 项属性 +1。高概率从${attributePriorityLabels(player.position)}中抽取，低概率从全部属性中抽取；综合能力按${positionName(player.position)}权重计算：${overallWeightLabels(player.position)}。</p>
       </section>
     `;
   }
@@ -2463,7 +2538,7 @@
         const offerTitle = offer.kind === "academyPoach" ? `${target.name}梯队挖角` : offer.kind === "seniorLoan" ? `${target.name}租借邀请` : target.name;
         const detail =
           offer.kind === "seniorLoan"
-            ? `${LEAGUES[target.league].name} · 租借费 ${money(offer.fee)} · 承担薪水 ${offer.wageShare}% · 至赛季末 · 定位 ${offer.role}`
+            ? `${LEAGUES[target.league].name} · 租借费 ${money(offer.fee)} · 承担薪水 ${offer.wageShare}% · 至赛季末 · ${offer.role === "租借主力" ? "承诺主力" : "轮换培养"}`
             : `${LEAGUES[target.league].name} · ${offer.kind === "academyPoach" ? "培养补偿" : "转会费"} ${money(offer.fee)} · ${wage(offer.wage)} · ${offer.years} 年 · 定位 ${offer.role}`;
         const openLabel = offer.kind === "seniorLoan" ? "同意外租" : "同意个人条款";
         return `

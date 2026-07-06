@@ -411,6 +411,33 @@ select:focus {
   color: var(--text);
 }
 
+.growth-overall {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 6px 10px;
+  border: 1px solid rgba(80, 200, 120, 0.32);
+  border-radius: 8px;
+  background: rgba(80, 200, 120, 0.07);
+  padding: 10px 12px;
+}
+
+.growth-overall span,
+.growth-overall small {
+  color: var(--muted);
+}
+
+.growth-overall strong {
+  grid-row: span 2;
+  color: var(--green);
+  font-size: 38px;
+  line-height: 0.95;
+}
+
+.growth-overall small {
+  font-size: 12px;
+}
+
 .growth-meter {
   height: 10px;
   border-radius: 999px;
