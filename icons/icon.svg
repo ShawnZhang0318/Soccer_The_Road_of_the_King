@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="球王之路">
+  <rect width="512" height="512" rx="72" fill="#101411"/>
+  <path d="M72 392c84-58 128-58 212 0s128 58 156 0" fill="none" stroke="#50c878" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="256" cy="224" r="108" fill="#f3f0e8"/>
+  <path d="M256 134l58 42-22 68h-72l-22-68 58-42z" fill="#17201a"/>
+  <path d="M154 210l44-34 22 68-58 43-42-28 34-49zm204-34l44 34 34 49-42 28-58-43 22-68zM198 322l22-78h72l22 78-58 42-58-42z" fill="#17201a"/>
+  <path d="M150 338c55 47 157 47 212 0" fill="none" stroke="#d8b15d" stroke-width="16" stroke-linecap="round"/>
+</svg>

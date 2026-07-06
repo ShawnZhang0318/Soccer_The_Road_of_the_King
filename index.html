@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101411" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="球王之路" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>球王之路 - 纯文字球员生涯</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <link rel="stylesheet" href="styles.css?v=20260706pwa2" />
+  </head>
+  <body>
+    <div id="app">
+      <section id="setupScreen" class="screen setup-screen">
+        <div class="setup-panel">
+          <p class="kicker">纯文字球员生涯</p>
+          <h1>球王之路</h1>
+          <p class="lead">
+            从 16 岁天才球员开始，靠训练、比赛、经纪人和自己的发言一步步走向世界足坛。
+          </p>
+
+          <form id="setupForm" class="setup-form">
+            <label>
+              <span>姓名</span>
+              <input id="playerName" name="playerName" type="text" maxlength="16" placeholder="例如：林澈" required />
+            </label>
+
+            <label>
+              <span>国籍</span>
+              <select id="nationality" name="nationality"></select>
+            </label>
+
+            <label>
+              <span>位置</span>
+              <select id="position" name="position"></select>
+            </label>
+
+            <fieldset>
+              <legend>开局身份</legend>
+              <div class="choice-grid">
+                <label class="radio-card">
+                  <input type="radio" name="origin" value="academy" checked />
+                  <span>豪门青训球员</span>
+                  <small>豪门随机，青训合约即将到期，经纪人会带来母队和其他豪门梯队方案。</small>
+                </label>
+                <label class="radio-card">
+                  <input type="radio" name="origin" value="firstTeam" />
+                  <span>小球队一线队员</span>
+                  <small>球队随机，出场机会多，曝光较慢。</small>
+                </label>
+              </div>
+            </fieldset>
+
+            <button class="primary-button" type="submit">开始生涯</button>
+          </form>
+        </div>
+      </section>
+
+      <section id="gameScreen" class="screen game-screen hidden">
+        <header class="topbar">
+          <div>
+            <p class="kicker" id="seasonLabel">2026/27 赛季</p>
+            <h2 id="playerTitle">球员</h2>
+          </div>
+          <button id="saveButton" class="ghost-button" type="button">存档</button>
+        </header>
+
+        <main class="game-shell">
+          <section class="status-grid" id="statusGrid"></section>
+
+          <nav class="tabbar" aria-label="游戏视图">
+            <button class="tab active" type="button" data-tab="career">生涯</button>
+            <button class="tab" type="button" data-tab="match">比赛</button>
+            <button class="tab" type="button" data-tab="table">积分榜</button>
+            <button class="tab" type="button" data-tab="market">转会</button>
+            <button class="tab" type="button" data-tab="profile">档案</button>
+          </nav>
+
+          <section class="content-panel">
+            <div id="careerView" class="view"></div>
+            <div id="matchView" class="view hidden"></div>
+            <div id="tableView" class="view hidden"></div>
+            <div id="marketView" class="view hidden"></div>
+            <div id="profileView" class="view hidden"></div>
+          </section>
+        </main>
+
+        <section id="choiceModal" class="choice-modal hidden" aria-live="polite"></section>
+      </section>
+    </div>
+
+    <script src="game.js?v=20260706pwa2"></script>
+  </body>
+</html>
