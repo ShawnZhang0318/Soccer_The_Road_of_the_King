@@ -1691,8 +1691,8 @@
     render();
   }
 
-  function formatChoiceEffects(effects) {
-    if (!effects) return "关系与状态暂无变化";
+  function formatChoiceEffects(effects, compact = false) {
+    if (!effects) return compact ? "无明显变化" : "关系与状态暂无变化";
     const labels = [
       ["manager", "主帅"],
       ["fans", "球迷"],
@@ -1708,7 +1708,8 @@
         const value = effects[key];
         return `${label}${value > 0 ? "+" : ""}${value}`;
       });
-    return parts.length ? `影响：${parts.join("，")}` : "关系与状态暂无变化";
+    if (!parts.length) return compact ? "无明显变化" : "关系与状态暂无变化";
+    return compact ? parts.join(" · ") : `影响：${parts.join("，")}`;
   }
 
   function applyEffects(effects) {
@@ -2070,6 +2071,18 @@
         addLog("info", `经纪人${state.agent.name}重新询价后，暂时没有新的正式报价。`, "market");
       }
     }
+    saveGame(true);
+    render();
+  }
+
+  function rejectOffer(index) {
+    const state = stateContainer.state;
+    const offer = state.market.offers[index];
+    if (!offer || offer.status !== "open") return;
+    const target = club(offer.clubId);
+    const label = offer.kind === "seniorLoan" ? "外租邀请" : offer.kind === "academyPoach" ? "梯队挖角" : "转会报价";
+    offer.status = "declined";
+    addLog("info", `你通过经纪人拒绝了${target.name}的${label}。`, "market");
     saveGame(true);
     render();
   }
@@ -2994,13 +3007,26 @@
             ? `${LEAGUES[target.league].name} · 租借费 ${money(offer.fee)} · 承担薪水 ${offer.wageShare}% · 至赛季末 · ${offer.role === "租借主力" ? "承诺主力" : "轮换培养"}`
             : `${LEAGUES[target.league].name} · ${offer.kind === "academyPoach" ? "培养补偿" : "转会费"} ${money(offer.fee)} · ${wage(offer.wage)} · ${offer.years} 年 · 定位 ${offer.role}`;
         const openLabel = offer.kind === "seniorLoan" ? "同意外租" : "同意个人条款";
+        const statusLabel =
+          offer.status === "open"
+            ? openLabel
+            : offer.status === "accepted"
+              ? "已接受"
+              : offer.status === "declined"
+                ? "你已拒绝"
+                : "母队已拒绝";
         return `
           <article class="offer-card">
             <h4>${offerTitle}</h4>
             <p>${detail}</p>
-            <button class="primary-button" type="button" data-offer="${index}" ${offer.status !== "open" ? "disabled" : ""}>
-              ${offer.status === "open" ? openLabel : offer.status === "rejected" ? "母队已拒绝" : "已接受"}
-            </button>
+            <div class="offer-actions">
+              <button class="primary-button" type="button" data-offer="${index}" ${offer.status !== "open" ? "disabled" : ""}>
+                ${statusLabel}
+              </button>
+              <button class="ghost-button" type="button" data-offer-reject="${index}" ${offer.status !== "open" ? "disabled" : ""}>
+                拒绝
+              </button>
+            </div>
           </article>
         `;
       })
@@ -3165,7 +3191,12 @@
         <h3>${state.pendingChoice.title}</h3>
         <p>${escapeHtml(state.pendingChoice.prompt)}</p>
         ${state.pendingChoice.choices
-          .map((choiceItem, index) => `<button class="choice-button" type="button" data-choice="${index}">${escapeHtml(choiceItem.label)}</button>`)
+          .map(
+            (choiceItem, index) => `<button class="choice-button" type="button" data-choice="${index}">
+              <span class="choice-button-label">${escapeHtml(choiceItem.label)}</span>
+              <span class="choice-button-effects">${escapeHtml(formatChoiceEffects(choiceItem.effects, true))}</span>
+            </button>`
+          )
           .join("")}
       </div>
     `;
@@ -3238,6 +3269,7 @@
       if (target.dataset.action === "reset-save") resetSave();
       if (target.dataset.strategy) setTransferStrategy(target.dataset.strategy);
       if (target.dataset.offer) acceptOffer(Number(target.dataset.offer));
+      if (target.dataset.offerReject) rejectOffer(Number(target.dataset.offerReject));
       if (target.dataset.choice) answerChoice(Number(target.dataset.choice));
     });
   }
