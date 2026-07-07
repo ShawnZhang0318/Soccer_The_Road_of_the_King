@@ -902,9 +902,33 @@ tr.highlight {
   color: var(--muted);
 }
 
+.leaderboard-block {
+  min-width: 0;
+}
+
 .leaderboard-list {
   display: grid;
   gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(80, 200, 120, 0.55) rgba(13, 18, 15, 0.72);
+}
+
+.leaderboard-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.leaderboard-list::-webkit-scrollbar-track {
+  background: rgba(13, 18, 15, 0.72);
+  border-radius: 999px;
+}
+
+.leaderboard-list::-webkit-scrollbar-thumb {
+  background: rgba(80, 200, 120, 0.55);
+  border-radius: 999px;
 }
 
 .leaderboard-row {
@@ -1441,6 +1465,10 @@ table.mini-table td small {
 
   .leaderboards-grid {
     grid-template-columns: 1fr;
+  }
+
+  .leaderboard-list {
+    max-height: 300px;
   }
 
   .offer-columns {
