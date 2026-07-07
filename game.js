@@ -3372,12 +3372,6 @@
     }
   }
 
-  function clubBadge(clubId, small = false) {
-    const team = club(clubId);
-    if (!team) return "";
-    return `<span class="club-badge ${small ? "small" : ""}" title="${escapeHtml(team.name)}">${escapeHtml(team.name.slice(0, 1))}</span>`;
-  }
-
   function contractExpiryLabel(player, state) {
     const expiry = new Date(state.seasonYear + player.contractYears, 5, 30);
     return `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}-${String(expiry.getDate()).padStart(2, "0")}`;
@@ -4207,8 +4201,8 @@
         const fromClub = move.fromClubId ? club(move.fromClubId) : null;
         const toClub = club(move.toClubId);
         const route = fromClub
-          ? `<span class="record-transfer-route">${escapeHtml(fromClub.name)} ${clubBadge(fromClub.id, true)} <span class="record-arrow">→</span> ${clubBadge(toClub.id, true)} ${escapeHtml(toClub.name)}</span>`
-          : `<span class="record-transfer-route">${clubBadge(toClub.id, true)} ${escapeHtml(toClub.name)}</span>`;
+          ? `<span class="record-transfer-route">${escapeHtml(fromClub.name)} <span class="record-arrow">→</span> ${escapeHtml(toClub.name)}</span>`
+          : `<span class="record-transfer-route">${escapeHtml(toClub.name)}</span>`;
         return `
           <article class="record-transfer-item">
             <div class="record-transfer-meta">
@@ -4231,7 +4225,6 @@
         return `
           <article class="record-career-item">
             <div class="record-career-main">
-              ${clubBadge(stint.clubId)}
               <div>
                 <strong>${escapeHtml(team.name)} ${loanTag}</strong>
                 <span>${fmtStintRange(stint)}</span>
@@ -4254,7 +4247,6 @@
     return `
       <article class="record-career-item">
         <div class="record-career-main">
-          <span class="club-badge nation">${escapeHtml(player.nationality.slice(0, 1))}</span>
           <div>
             <strong>${escapeHtml(player.nationality)}</strong>
             <span>${debutText}</span>
@@ -4289,28 +4281,85 @@
           (group) => `
             <div class="record-honor-group">
               <h5>${escapeHtml(group.key)}</h5>
-              ${group.items.map((honor) => renderRecordHonorItem(honor)).join("")}
+              <div class="record-honor-list grouped">
+                ${groupHonorsForRecord(group.items).map((awardGroup) => renderRecordHonorAwardGroup(awardGroup, true)).join("")}
+              </div>
             </div>
           `
         )
         .join("");
     }
-    return `<div class="record-honor-list">${honors.map((honor) => renderRecordHonorItem(honor)).join("")}</div>`;
+    return `<div class="record-honor-list grouped">${groupHonorsForRecord(honors).map((group) => renderRecordHonorAwardGroup(group)).join("")}</div>`;
   }
 
-  function renderRecordHonorItem(honor) {
-    const competition = honor.meta?.competition || honorCategoryLabel(honor.category);
+  function groupHonorsForRecord(honors) {
+    const groups = [];
+    honors.forEach((honor) => {
+      const competition = honor.meta?.competition || honorCategoryLabel(honor.category);
+      const key = `${honor.title}|${competition}`;
+      let group = groups.find((entry) => entry.key === key);
+      if (!group) {
+        group = {
+          key,
+          title: honor.title,
+          competition,
+          tier: honor.tier || "standard",
+          latestSeason: honor.seasonYear || 0,
+          items: []
+        };
+        groups.push(group);
+      }
+      group.items.push(honor);
+      group.latestSeason = Math.max(group.latestSeason, honor.seasonYear || 0);
+      if (honor.tier === "legend" || (honor.tier === "gold" && group.tier !== "legend")) {
+        group.tier = honor.tier;
+      }
+    });
+
+    groups.forEach((group) => {
+      group.items.sort((a, b) => (b.seasonYear || 0) - (a.seasonYear || 0) || (b.meta?.year || 0) - (a.meta?.year || 0));
+    });
+
+    return groups.sort((a, b) => b.latestSeason - a.latestSeason || a.title.localeCompare(b.title, "zh-CN"));
+  }
+
+  function renderRecordHonorAwardGroup(group, hideCompetition = false) {
     return `
-      <article class="record-honor-item ${honor.tier || ""}">
-        <div class="record-honor-icon">${honorTierIcon(honor.tier)}</div>
-        <div class="record-honor-body">
-          <strong>${escapeHtml(honor.title)}</strong>
-          <span>${escapeHtml(honor.date || "")} · ${escapeHtml(competition)}</span>
-          <small>${escapeHtml(honor.subtitle || "")}</small>
+      <article class="record-honor-award ${group.tier || ""}">
+        <div class="record-honor-award-heading">
+          <div>
+            <strong>${escapeHtml(group.title)}</strong>
+            ${hideCompetition ? "" : `<span>${escapeHtml(group.competition)}</span>`}
+          </div>
+          <b>${group.items.length} 个</b>
         </div>
-        <span class="record-honor-count">1</span>
+        <div class="record-honor-trophy-grid">
+          ${group.items.map((honor) => renderRecordHonorTrophy(honor)).join("")}
+        </div>
       </article>
     `;
+  }
+
+  function renderRecordHonorTrophy(honor) {
+    const competition = honor.meta?.competition || honorCategoryLabel(honor.category);
+    const date = honor.meta?.year ? String(honor.meta.year) : honor.date || "";
+    const detail = honorTrophyDetail(honor, competition);
+    return `
+      <div class="record-honor-trophy ${honor.tier || ""}" title="${escapeHtml(honor.subtitle || "")}">
+        <div class="record-honor-icon">${honorTierIcon(honor.tier)}</div>
+        <strong>${escapeHtml(date)}</strong>
+        <span>${escapeHtml(detail)}</span>
+      </div>
+    `;
+  }
+
+  function honorTrophyDetail(honor, competition) {
+    if (typeof honor.meta?.goals === "number") return `${honor.meta.goals} 球`;
+    if (typeof honor.meta?.cleanSheets === "number") return `${honor.meta.cleanSheets} 零封`;
+    if (typeof honor.meta?.score === "number") return `${honor.meta.score} 分`;
+    const subject = (honor.subtitle || "").match(/^(.{1,12}?)(?:以|在|拿到|通过)/);
+    if (subject?.[1] && subject[1] !== "你") return subject[1];
+    return competition;
   }
 
   function renderBar(label, value, inverse = false) {

@@ -273,7 +273,7 @@ select:focus {
 
 .tabbar {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -284,6 +284,12 @@ select:focus {
   border: 1px solid var(--line);
   color: var(--muted);
   font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.tab-label-mobile {
+  display: none;
 }
 
 .tab.active {
@@ -1231,6 +1237,89 @@ table.mini-table td small {
   font-size: 13px;
 }
 
+.record-honor-list.grouped {
+  gap: 0;
+}
+
+.record-honor-award {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.record-honor-award:last-child {
+  border-bottom: none;
+}
+
+.record-honor-award-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+
+.record-honor-award-heading strong {
+  display: block;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.record-honor-award-heading span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-honor-award-heading b {
+  color: var(--text);
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+.record-honor-trophy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+  gap: 10px;
+}
+
+.record-honor-trophy {
+  min-height: 90px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid rgba(51, 66, 55, 0.62);
+  border-radius: 8px;
+  background: rgba(13, 18, 15, 0.56);
+  text-align: center;
+  padding: 8px 6px;
+}
+
+.record-honor-trophy.legend {
+  border-color: rgba(230, 194, 92, 0.45);
+  background: rgba(230, 194, 92, 0.08);
+}
+
+.record-honor-trophy.gold {
+  border-color: rgba(80, 200, 120, 0.38);
+  background: rgba(80, 200, 120, 0.07);
+}
+
+.record-honor-trophy strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.record-honor-trophy span {
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .record-save-actions {
   margin-top: 14px;
 }
@@ -1299,7 +1388,7 @@ table.mini-table td small {
     position: sticky;
     top: 68px;
     z-index: 18;
-    grid-template-columns: repeat(6, minmax(54px, 1fr));
+    grid-template-columns: repeat(5, minmax(58px, 1fr));
     overflow-x: auto;
     padding-bottom: 4px;
     background: rgba(16, 20, 17, 0.94);
@@ -1308,6 +1397,29 @@ table.mini-table td small {
   .tab {
     min-width: 54px;
     font-size: 13px;
+  }
+
+  .record-tab {
+    min-width: 60px;
+    white-space: normal;
+  }
+
+  .record-tab .tab-label-full {
+    display: none;
+  }
+
+  .record-tab .tab-label-mobile {
+    display: inline-block;
+  }
+
+  .record-honor-trophy-grid {
+    grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+    gap: 8px;
+  }
+
+  .record-honor-trophy {
+    min-height: 82px;
+    padding: 7px 4px;
   }
 
   .view {
