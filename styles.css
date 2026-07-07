@@ -653,6 +653,57 @@ tr.highlight {
   gap: 10px;
 }
 
+.offer-panel.is-collapsed .offer-list {
+  display: none;
+}
+
+.offer-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.offer-column {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.offer-column-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.offer-column-heading h4 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.offer-notice {
+  border: 1px solid rgba(216, 177, 93, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(216, 177, 93, 0.08);
+  color: #f3d692;
+}
+
+.offer-accepted-banner {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.offer-card.muted {
+  opacity: 0.72;
+}
+
+.offer-card.accepted {
+  border-color: rgba(80, 200, 120, 0.45);
+}
+
 .offer-card {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -833,6 +884,357 @@ tr.highlight {
   line-height: 1.6;
 }
 
+.leaderboards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.leaderboard-block h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.table-wrap.compact {
+  overflow-x: auto;
+}
+
+table.mini-table {
+  width: 100%;
+  font-size: 13px;
+}
+
+table.mini-table td small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.match-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.mini-log-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mini-log {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.mini-log strong {
+  font-size: 14px;
+}
+
+.mini-log span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.offer-card h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.record-page {
+  display: grid;
+  gap: 12px;
+}
+
+.record-hero {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(18, 34, 48, 0.95), rgba(13, 18, 15, 0.92));
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.record-hero-main h3 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.record-hero-main p {
+  margin: 0;
+  color: var(--soft);
+  font-size: 13px;
+}
+
+.record-hero-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.record-hero-stats div {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.record-hero-stats span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.record-hero-stats strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 16px;
+}
+
+.record-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(13, 18, 15, 0.62);
+  padding: 14px;
+}
+
+.record-block-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.record-block-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.record-kv-list {
+  display: grid;
+  gap: 0;
+  margin-top: 12px;
+}
+
+.record-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 14px;
+}
+
+.record-kv:last-child {
+  border-bottom: none;
+}
+
+.record-kv span {
+  color: var(--muted);
+  flex: 0 0 88px;
+}
+
+.record-kv strong {
+  text-align: right;
+  font-weight: 500;
+}
+
+.record-bars {
+  margin-top: 12px;
+}
+
+.record-table-labels,
+.record-career-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 42px);
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-career-stats strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.record-transfer-list,
+.record-career-list,
+.record-honor-list {
+  display: grid;
+  gap: 0;
+}
+
+.record-transfer-item,
+.record-career-item,
+.record-honor-item {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.record-transfer-item:last-child,
+.record-career-item:last-child,
+.record-honor-item:last-child {
+  border-bottom: none;
+}
+
+.record-transfer-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.record-transfer-meta span {
+  color: var(--muted);
+}
+
+.record-transfer-route {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.record-arrow {
+  color: var(--green);
+}
+
+.record-career-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.record-career-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.record-career-main strong {
+  display: block;
+  font-size: 15px;
+}
+
+.record-career-main span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.club-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(80, 200, 120, 0.14);
+  border: 1px solid rgba(80, 200, 120, 0.35);
+  color: #a9efbe;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.club-badge.small {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+.club-badge.nation {
+  background: rgba(216, 177, 93, 0.14);
+  border-color: rgba(216, 177, 93, 0.35);
+  color: #f3d692;
+}
+
+.record-sort-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.record-sort {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.record-sort.active {
+  border-color: rgba(80, 200, 120, 0.55);
+  color: #a9efbe;
+}
+
+.record-honor-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 12px;
+  color: var(--soft);
+  font-size: 12px;
+}
+
+.record-honor-group + .record-honor-group {
+  margin-top: 12px;
+}
+
+.record-honor-group h5 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.record-honor-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 28px;
+  gap: 10px;
+  align-items: center;
+}
+
+.record-honor-icon {
+  font-size: 22px;
+  text-align: center;
+}
+
+.record-honor-body strong {
+  display: block;
+  font-size: 15px;
+}
+
+.record-honor-body span,
+.record-honor-body small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.record-honor-count {
+  text-align: right;
+  color: var(--soft);
+  font-size: 13px;
+}
+
+.record-save-actions {
+  margin-top: 14px;
+}
+
 @media (max-width: 900px) {
   .status-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -840,6 +1242,18 @@ tr.highlight {
 
   .two-column {
     grid-template-columns: 1fr;
+  }
+
+  .leaderboards-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .offer-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .record-hero-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

@@ -404,7 +404,9 @@
   const stateContainer = {
     state: null,
     activeTab: "career",
-    careerTimelineCollapsed: false
+    careerTimelineCollapsed: false,
+    marketOffersCollapsed: false,
+    honorSort: "time"
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -529,8 +531,11 @@
     if (!Array.isArray(loaded.player.honors)) loaded.player.honors = [];
     if (!loaded.player.careerStats) loaded.player.careerStats = freshCareerStats();
     normalizeCareerStats(loaded.player.careerStats);
-    if (!loaded.player.national) loaded.player.national = { caps: 0, goals: 0 };
-    if (typeof loaded.player.national.goals !== "number") loaded.player.national.goals = 0;
+    if (!loaded.player.national) loaded.player.national = normalizeNationalData(null);
+    else loaded.player.national = normalizeNationalData(loaded.player.national);
+    normalizeCareerHistory(loaded.player, loaded);
+    if (!loaded.clubQualifications) loaded.clubQualifications = {};
+    loaded.european = normalizeEuropeanState(loaded.european);
     if (loaded.version < 2 && loaded.player.attributes && loaded.player.position) {
       loaded.player.overall = Math.min(loaded.player.potential || 99, calculateOverall(loaded.player.attributes, loaded.player.position));
       loaded.version = 2;
@@ -540,6 +545,7 @@
     if (!["stay", "minutes", "bigger", "loan", "transfer"].includes(loaded.market.strategy)) loaded.market.strategy = "stay";
     if (!Array.isArray(loaded.market.offers)) loaded.market.offers = [];
     if (typeof loaded.market.lastOfferWeek === "undefined") loaded.market.lastOfferWeek = null;
+    if (typeof loaded.market.dealDone === "undefined") loaded.market.dealDone = false;
     if (!loaded.windows) loaded.windows = { summer: false, winter: false };
     if (!loaded.leagues) loaded.leagues = {};
     if (!Array.isArray(loaded.logs)) loaded.logs = [];
@@ -748,6 +754,228 @@
     return k - 1;
   }
 
+  function pseudoRandom(seed) {
+    const x = Math.sin(seed) * 10000;
+    return x - Math.floor(x);
+  }
+
+  function normalizeNationalData(national) {
+    const base = national || {};
+    return {
+      caps: base.caps || 0,
+      goals: base.goals || 0,
+      assists: base.assists || 0,
+      callUps: base.callUps || 0,
+      season: base.season || { caps: 0, goals: 0, assists: 0 },
+      matches: Array.isArray(base.matches) ? base.matches : []
+    };
+  }
+
+  function normalizeEuropeanState(european) {
+    if (!european) return null;
+    return {
+      competition: european.competition,
+      clubId: european.clubId,
+      won: !!european.won,
+      eliminated: !!european.eliminated,
+      schedule: Array.isArray(european.schedule) ? european.schedule : [],
+      stats: european.stats || { appearances: 0, goals: 0, assists: 0, ratingTotal: 0, ratedMatches: 0 }
+    };
+  }
+
+  function refreshClubQualifications() {
+    const state = stateContainer.state;
+    if (!state) return;
+    state.clubQualifications = state.clubQualifications || {};
+    Object.keys(LEAGUES).forEach((leagueId) => {
+      if (LEAGUES[leagueId].level !== 1) return;
+      ensureLeagueSeason(leagueId);
+      const rows = sortedTable(leagueId);
+      rows.forEach((row, index) => {
+        const label = placementLabel(leagueId, index + 1, rows.length);
+        if (["欧冠", "欧冠资格赛", "欧联", "欧协联"].includes(label)) {
+          state.clubQualifications[row.teamId] = label;
+        } else {
+          delete state.clubQualifications[row.teamId];
+        }
+      });
+    });
+  }
+
+  function clubEuropeanProspectLabel(clubId) {
+    const state = stateContainer.state;
+    const target = club(clubId);
+    if (!target || LEAGUES[target.league]?.level !== 1) return "";
+    const stored = state?.clubQualifications?.[clubId];
+    if (stored) return stored;
+    ensureLeagueSeason(target.league);
+    const rows = sortedTable(target.league);
+    const rank = rows.findIndex((row) => row.teamId === clubId) + 1;
+    if (!rank) return "";
+    const label = placementLabel(target.league, rank, rows.length);
+    return ["欧冠", "欧冠资格赛", "欧联", "欧协联"].includes(label) ? label : "";
+  }
+
+  function buildLeagueLeaderboards(leagueId) {
+    const state = stateContainer.state;
+    const player = state.player;
+    const rows = sortedTable(leagueId);
+    const scorers = [];
+    const assisters = [];
+    const ratings = [];
+
+    rows.forEach((row) => {
+      const team = club(row.teamId);
+      const seed = row.teamId.split("").reduce((sum, ch) => sum + ch.charCodeAt(0), 0) + state.seasonYear * 13 + row.played * 7;
+      let teamGoals = row.gf;
+      let teamAssists = Math.max(0, Math.round(row.gf * 0.72 + row.played * 0.18));
+      if (row.teamId === player.clubId) {
+        teamGoals = Math.max(0, teamGoals - player.season.goals);
+        teamAssists = Math.max(0, teamAssists - player.season.assists);
+      }
+      const npcGoals = Math.max(0, Math.min(teamGoals, Math.round(teamGoals * (0.34 + pseudoRandom(seed) * 0.18))));
+      const npcAssists = Math.max(0, Math.min(teamAssists, Math.round(teamAssists * (0.32 + pseudoRandom(seed + 17) * 0.16))));
+      const npcRating = clamp(6.15 + (team.rating - 70) * 0.04 + pseudoRandom(seed + 31) * 0.55, 5.8, 7.8);
+      if (npcGoals > 0 || row.played > 0) {
+        scorers.push({ name: `${team.name}射手`, team: team.name, goals: npcGoals, isUser: false });
+      }
+      if (npcAssists > 0 || row.played > 0) {
+        assisters.push({ name: `${team.name}核心`, team: team.name, assists: npcAssists, isUser: false });
+      }
+      ratings.push({ name: `${team.name}核心`, team: team.name, rating: npcRating, isUser: false });
+    });
+
+    if (currentClub().league === leagueId && player.season.appearances > 0) {
+      const avgRating = player.season.ratedMatches ? player.season.ratingTotal / player.season.ratedMatches : 0;
+      scorers.push({ name: player.name, team: currentClub().name, goals: player.season.goals, isUser: true });
+      assisters.push({ name: player.name, team: currentClub().name, assists: player.season.assists, isUser: true });
+      if (avgRating > 0) {
+        ratings.push({ name: player.name, team: currentClub().name, rating: avgRating, isUser: true });
+      }
+    }
+
+    scorers.sort((a, b) => b.goals - a.goals || Number(b.isUser) - Number(a.isUser));
+    assisters.sort((a, b) => b.assists - a.assists || Number(b.isUser) - Number(a.isUser));
+    ratings.sort((a, b) => b.rating - a.rating || Number(b.isUser) - Number(a.isUser));
+    return {
+      scorers: scorers.slice(0, 12),
+      assisters: assisters.slice(0, 12),
+      ratings: ratings.slice(0, 12)
+    };
+  }
+
+  function leagueTopGoals(leagueId) {
+    const leaders = buildLeagueLeaderboards(leagueId).scorers;
+    return leaders.length ? leaders[0].goals : 0;
+  }
+
+  function setupEuropeanCampaign(competition, clubId) {
+    const state = stateContainer.state;
+    if (!competition || !clubId || LEAGUES[club(clubId).league]?.level !== 1) {
+      state.european = null;
+      return;
+    }
+    const opponents = CLUBS.filter((entry) => entry.tier === "elite" && entry.id !== clubId)
+      .sort((a, b) => b.rating - a.rating)
+      .slice(0, 12)
+      .sort(() => random() - 0.5)
+      .slice(0, 6);
+    const weeks = [2, 6, 10, 14, 18, 22];
+    const stages = ["小组赛", "小组赛", "1/8决赛", "1/4决赛", "半决赛", "决赛"];
+    state.european = {
+      competition,
+      clubId,
+      won: false,
+      eliminated: false,
+      schedule: weeks.map((week, index) => ({
+        week,
+        stage: stages[index],
+        home: index % 2 === 0 ? clubId : opponents[index].id,
+        away: index % 2 === 0 ? opponents[index].id : clubId,
+        played: false,
+        homeGoals: 0,
+        awayGoals: 0
+      })),
+      stats: { appearances: 0, goals: 0, assists: 0, ratingTotal: 0, ratedMatches: 0 }
+    };
+  }
+
+  function getEuropeanMatchForWeek(week) {
+    const euro = stateContainer.state?.european;
+    if (!euro || euro.eliminated || euro.won) return null;
+    return euro.schedule.find((match) => match.week === week && !match.played) || null;
+  }
+
+  function getNextEuropeanMatch() {
+    const state = stateContainer.state;
+    const euro = state?.european;
+    if (!euro || euro.eliminated || euro.won) return null;
+    return euro.schedule.find((match) => !match.played) || null;
+  }
+
+  function simulateEuropeanWeekIfDue(detailed) {
+    const state = stateContainer.state;
+    const own = currentClub();
+    const euro = state.european;
+    if (!euro || euro.clubId !== own.id || euro.eliminated || euro.won) return;
+    const match = getEuropeanMatchForWeek(state.week);
+    if (!match) return;
+
+    const isHome = match.home === own.id;
+    const opponent = club(isHome ? match.away : match.home);
+    const minutes = determineMinutes({ home: match.home, away: match.away });
+    const importance = euro.competition === "欧冠" ? 0.25 : euro.competition === "欧联" ? 0.18 : 0.12;
+    const contribution = contributionFromPerformance(minutes, opponent.rating, importance);
+    const playerBoost = minutes > 0 ? (contribution.rating - 6.4) * 1.15 + contribution.goals * 0.75 + contribution.assists * 0.38 : -0.35;
+    let score = simulateScore(match.home, match.away, isHome ? playerBoost : -playerBoost * 0.65);
+    if (isHome) {
+      score.homeGoals += contribution.goals;
+      score.homeGoals += Math.min(contribution.assists, random() < 0.72 ? contribution.assists : 0);
+    } else {
+      score.awayGoals += contribution.goals;
+      score.awayGoals += Math.min(contribution.assists, random() < 0.72 ? contribution.assists : 0);
+    }
+    const ownGoals = isHome ? score.homeGoals : score.awayGoals;
+    const oppGoals = isHome ? score.awayGoals : score.homeGoals;
+    const won = ownGoals > oppGoals;
+    const drawn = ownGoals === oppGoals;
+    Object.assign(
+      contribution,
+      finalizeMatchContribution(contribution, {
+        won,
+        drawn,
+        ownGoals,
+        oppGoals,
+        isGoalkeeper: positionLine(state.player.position) === "goalkeeper"
+      })
+    );
+
+    match.played = true;
+    match.homeGoals = score.homeGoals;
+    match.awayGoals = score.awayGoals;
+    if (minutes > 0) {
+      euro.stats.appearances += 1;
+      euro.stats.goals += contribution.goals;
+      euro.stats.assists += contribution.assists;
+      euro.stats.ratingTotal += contribution.rating;
+      euro.stats.ratedMatches += 1;
+      state.player.careerStats.europeanGoals += contribution.goals;
+      if (euro.competition === "欧冠") state.player.careerStats.uclGoals += contribution.goals;
+      const euroXpBonus = euro.competition === "欧冠" ? 18 : euro.competition === "欧联" ? 14 : 10;
+      state.player.xp += contribution.xp + euroXpBonus;
+      maybeImprovePlayer();
+    }
+
+    const resultText = `${own.name} ${ownGoals}-${oppGoals} ${opponent.name}`;
+    if (match.stage === "决赛" && won) euro.won = true;
+    else if (!won && !drawn) euro.eliminated = true;
+
+    addLog(won ? "positive" : drawn ? "info" : "negative", `${euro.competition} ${match.stage}：${resultText}。${contribution.text}欧战成长 +${minutes > 0 ? contribution.xp + (euro.competition === "欧冠" ? 18 : euro.competition === "欧联" ? 14 : 10) : 0}。`, "match");
+    if (detailed) {
+      addLog("info", `${euro.competition} ${match.stage}：${isHome ? "主场" : "客场"}对阵${opponent.name}，${won ? "球队晋级形势更好" : drawn ? "比分胶着" : "球队遭遇挫折"}。`, "match");
+    }
+  }
+
   function simulateScore(homeId, awayId, playerBoost = 0) {
     const home = club(homeId);
     const away = club(awayId);
@@ -778,7 +1006,13 @@
     const current = currentClub();
     const leagueSeason = ensureLeagueSeason(current.league);
     const weekMatches = leagueSeason.schedule[state.week] || [];
-    return weekMatches.find((match) => match.home === current.id || match.away === current.id) || null;
+    const leagueMatch = weekMatches.find((match) => match.home === current.id || match.away === current.id) || null;
+    const euroMatch = getEuropeanMatchForWeek(state.week);
+    if (euroMatch && state.european?.clubId === current.id) {
+      return { type: "european", ...euroMatch };
+    }
+    if (leagueMatch) return { type: "league", ...leagueMatch };
+    return null;
   }
 
   function nextOpponentLabel() {
@@ -786,7 +1020,8 @@
     if (!match) return "本周无正式比赛";
     const isHome = match.home === currentClub().id;
     const opponent = club(isHome ? match.away : match.home);
-    return `${isHome ? "主场" : "客场"} vs ${opponent.name}`;
+    const prefix = match.type === "european" ? `${stateContainer.state.european?.competition || "欧战"}` : "联赛";
+    return `${prefix} · ${isHome ? "主场" : "客场"} vs ${opponent.name}`;
   }
 
   function trainingGain(mode) {
@@ -931,9 +1166,9 @@
     let needed = growthNeeded(player);
     while (player.xp >= needed && player.overall < player.potential) {
       player.xp -= needed;
-      const attributeKeys = Object.keys(player.attributes).filter((key) => player.attributes[key] < 99);
+      const attributeKeys = growableAttributeKeys(player.position, player.attributes);
       if (!attributeKeys.length) break;
-      const priority = attributePriority(player.position).filter((key) => player.attributes[key] < 99);
+      const priority = attributePriority(player.position).filter((key) => attributeKeys.includes(key));
       const target = random() < 0.68 && priority.length ? choice(priority) : choice(attributeKeys);
       const oldAttribute = player.attributes[target];
       const oldOverall = player.overall;
@@ -961,6 +1196,15 @@
 
   function attributePriority(positionId) {
     return ATTRIBUTE_PRIORITIES[positionId] || ATTRIBUTE_PRIORITIES.CM;
+  }
+
+  function growableAttributeKeys(positionId, attributes) {
+    const weights = OVERALL_WEIGHTS[positionId] || OVERALL_WEIGHTS.CM;
+    return Object.keys(attributes).filter((key) => (weights[key] || 0) > 0 && attributes[key] < 99);
+  }
+
+  function growableAttributeLabels(positionId) {
+    return growableAttributeKeys(positionId, stateContainer.state?.player?.attributes || {}).map(attributeLabel).join("、");
   }
 
   function attributeLabel(key) {
@@ -1733,6 +1977,13 @@
     ensureLeagueSeason(target.league);
     if (target.id !== oldClub.id) {
       catchUpLeague(target.league, state.week);
+      trackClubMove({
+        type: outcome.status === "academy" ? "join" : "transfer",
+        fromClubId: oldClub.id,
+        toClubId: target.id,
+        fee: outcome.wage || 0,
+        feeLabel: outcome.status === "academy" ? "梯队合同" : "一线队提拔"
+      });
     }
     addLog(choiceItem.tone || "info", outcome.log, choiceItem.tag || "agent");
   }
@@ -1817,8 +2068,11 @@
       if (match === userMatch) simulateUserMatch(match, detailed);
       else simulateNeutralMatch(own.league, match);
     });
+    simulateEuropeanWeekIfDue(detailed);
+    refreshClubQualifications();
     leagueSeason.simulatedWeeks = Math.max(leagueSeason.simulatedWeeks, state.week + 1);
-    if (!userMatch) {
+    const euroMatch = getEuropeanMatchForWeek(state.week);
+    if (!userMatch && !euroMatch) {
       addLog("info", "本周没有你的正式比赛，球队完成了训练与恢复。", "match");
     }
     maybeNationalTeamCall();
@@ -1844,6 +2098,7 @@
     state.market.isOpen = true;
     state.market.windowType = type;
     state.market.offers = [];
+    state.market.dealDone = false;
     state.market.lastOfferWeek = state.week;
     const label = type === "summer" ? "夏季转会窗" : "冬季转会窗";
     addLog("warning", `${label}开启。经纪人${state.agent.name}会把真实报价告诉你，但推荐不等于一定能成行。`, "market");
@@ -1858,6 +2113,7 @@
   function maybeUpdateTransferWindowMarket() {
     const state = stateContainer.state;
     if (!state.market.isOpen || !state.market.windowType) return;
+    if (state.market.dealDone) return;
     if (state.week >= transferWindowEndWeek()) return;
     if (state.market.lastOfferWeek === state.week) return;
     state.market.lastOfferWeek = state.week;
@@ -1905,6 +2161,7 @@
 
   function generateOffers(type, options = {}) {
     const state = stateContainer.state;
+    if (state.market.dealDone) return 0;
     const player = state.player;
     const own = contractClub();
     const playingClub = currentClub();
@@ -1921,10 +2178,7 @@
         const chance = marketOfferChance(candidate, marketIntent, type);
         return { candidate, chance, attention: marketAttentionScore(candidate, marketIntent) };
       });
-    const selectedClubs = evaluatedClubs
-      .filter((entry) => random() < entry.chance)
-      .sort((a, b) => b.chance + b.candidate.reputation * 0.002 - (a.chance + a.candidate.reputation * 0.002))
-      .slice(0, randomInt(0, append ? (type === "summer" ? 2 : 1) : type === "summer" ? 3 : 2));
+    const selectedClubs = selectMarketCandidates(evaluatedClubs, marketIntent, type, append);
     const seniorOffers = selectedClubs.map(({ candidate }) => (marketIntent === "loan" ? makeLoanOffer(candidate) : makeOffer(candidate)));
     const academyOffers = reason === "weekly" ? [] : generateAcademyPoachOffers(type);
     const newOffers = seniorOffers.concat(academyOffers).filter((offer) => !hasExistingMarketOffer(offer.clubId, offer.kind));
@@ -1949,6 +2203,158 @@
     return offers.some((offer) => offer.clubId === clubId && offer.kind === kind);
   }
 
+  function isEliteClub(club) {
+    return club?.tier === "elite" || (club?.reputation || 0) >= 88;
+  }
+
+  function playerOutgrownClub(player, own) {
+    if (!player || !own) return false;
+    return player.overall >= own.rating + 7 || (player.overall >= 80 && !isEliteClub(own));
+  }
+
+  function marketOfferWeight(entry, marketIntent, player, own) {
+    const candidate = entry.candidate;
+    let weight = entry.chance;
+    const outgrown = playerOutgrownClub(player, own);
+
+    if (outgrown) {
+      if (isEliteClub(candidate) && isMeaningfulUpgrade(candidate, own) && playerMatchesClubLevel(candidate, player)) {
+        weight += 0.22 + clamp((player.overall - own.rating) / 45, 0, 0.2);
+      }
+      if (candidate.rating < player.overall - 6) weight *= 0.04;
+      if (candidate.tier === "small") weight *= 0.015;
+      if (candidate.rating <= own.rating + 1 && candidate.reputation <= own.reputation + 4) weight *= 0.08;
+    }
+
+    if (marketIntent === "bigger") {
+      weight += clubPrestigeScore(candidate) / 420;
+      if (!isMeaningfulUpgrade(candidate, own)) weight *= 0.01;
+    } else if (marketIntent === "transfer" && outgrown) {
+      weight += isEliteClub(candidate) ? clubPrestigeScore(candidate) / 520 : 0;
+    }
+
+    return Math.max(0.001, weight);
+  }
+
+  function pickWeightedMarketEntries(entries, count, excludeIds = new Set()) {
+    const pool = entries.filter((entry) => !excludeIds.has(entry.candidate.id));
+    const selected = [];
+    while (selected.length < count && pool.length) {
+      const total = pool.reduce((sum, entry) => sum + entry.weight, 0);
+      let roll = random() * total;
+      let pickedIndex = pool.length - 1;
+      for (let i = 0; i < pool.length; i += 1) {
+        roll -= pool[i].weight;
+        if (roll <= 0) {
+          pickedIndex = i;
+          break;
+        }
+      }
+      selected.push(pool[pickedIndex]);
+      pool.splice(pickedIndex, 1);
+    }
+    return selected;
+  }
+
+  function selectMarketCandidates(evaluatedClubs, marketIntent, type, append) {
+    const player = stateContainer.state.player;
+    const own = contractClub();
+    const outgrown = playerOutgrownClub(player, own);
+    const maxOffers = append ? (type === "summer" ? 2 : 1) : type === "summer" ? 3 : 2;
+    if (!evaluatedClubs.length) return [];
+    const minOffers = append ? 0 : 1;
+    const targetCount = randomInt(Math.min(minOffers, maxOffers), maxOffers);
+    const weighted = evaluatedClubs
+      .map((entry) => ({
+        ...entry,
+        weight: marketOfferWeight(entry, marketIntent, player, own)
+      }))
+      .sort((a, b) => b.weight - a.weight || clubPrestigeScore(b.candidate) - clubPrestigeScore(a.candidate));
+
+    const selected = [];
+    const selectedIds = new Set();
+
+    if (outgrown && (marketIntent === "bigger" || marketIntent === "transfer")) {
+      const eliteOptions = weighted.filter(
+        (entry) =>
+          isEliteClub(entry.candidate) &&
+          isMeaningfulUpgrade(entry.candidate, own) &&
+          playerMatchesClubLevel(entry.candidate, player)
+      );
+      if (eliteOptions.length) {
+        const [firstElite] = pickWeightedMarketEntries(eliteOptions, 1);
+        selected.push(firstElite);
+        selectedIds.add(firstElite.candidate.id);
+        if (targetCount >= 2 && eliteOptions.length > 1) {
+          const secondElite = pickWeightedMarketEntries(eliteOptions, 1, selectedIds)[0];
+          if (secondElite) {
+            selected.push(secondElite);
+            selectedIds.add(secondElite.candidate.id);
+          }
+        }
+      }
+    }
+
+    const remaining = weighted.filter((entry) => !selectedIds.has(entry.candidate.id));
+    const filler = pickWeightedMarketEntries(remaining, Math.max(0, targetCount - selected.length));
+    filler.forEach((entry) => {
+      if (outgrown && entry.candidate.rating < player.overall - 8 && !isEliteClub(entry.candidate)) return;
+      if (selected.length < targetCount) selected.push(entry);
+    });
+
+    return selected.slice(0, targetCount);
+  }
+
+  function clubPrestigeScore(club) {
+    return club.reputation * 1.35 + club.rating;
+  }
+
+  function isMeaningfulUpgrade(candidate, own) {
+    const prestigeDelta = clubPrestigeScore(candidate) - clubPrestigeScore(own);
+    if (prestigeDelta >= 5) return true;
+    if (candidate.reputation >= own.reputation + 2 && candidate.rating >= own.rating - 1) return true;
+    if (candidate.reputation > own.reputation && candidate.rating >= own.rating + 2) return true;
+    if (isEliteClub(candidate) && !isEliteClub(own) && candidate.rating >= own.rating + 4) return true;
+    return false;
+  }
+
+  function playerMatchesClubLevel(candidate, player) {
+    const abilityGap = candidate.rating - player.overall;
+    const upside = Math.max(0, player.potential - player.overall);
+    if (abilityGap < -20 && player.potential < candidate.rating + 3) return false;
+    if (player.overall - candidate.rating > 10) return false;
+    if (player.overall - candidate.rating > 6 && upside <= 2) return false;
+    if (player.overall - candidate.rating > 4 && candidate.reputation < player.reputation + 8 && upside <= 4) return false;
+    return true;
+  }
+
+  function fitsBiggerStage(candidate, own, player) {
+    if (!isMeaningfulUpgrade(candidate, own)) return false;
+    if (!playerMatchesClubLevel(candidate, player)) return false;
+
+    const atElite = isEliteClub(own);
+    const star = player.overall >= 82;
+    const worldClass = player.overall >= 87;
+
+    if (atElite && worldClass) {
+      if (!isEliteClub(candidate)) return false;
+      if (candidate.tier === "small") return false;
+      if (candidate.reputation < own.reputation - 1 && candidate.rating <= own.rating) return false;
+      if (candidate.rating < player.overall - 8 && candidate.reputation <= own.reputation) return false;
+      return candidate.reputation >= own.reputation || candidate.rating >= Math.max(own.rating, player.overall - 6);
+    }
+
+    if (atElite && star) {
+      if (candidate.tier === "small") return false;
+      if (candidate.reputation < own.reputation && candidate.rating <= own.rating + 1) return false;
+      if (candidate.rating < player.overall - 10 && candidate.reputation < own.reputation + 4) return false;
+    }
+
+    const abilityGap = candidate.rating - player.overall;
+    const strongProspect = player.potential >= candidate.rating - (isEliteClub(candidate) ? 2 : 5);
+    return abilityGap <= (strongProspect ? 24 : 12);
+  }
+
   function candidateFitsMarket(candidate, marketIntent) {
     const state = stateContainer.state;
     const player = state.player;
@@ -1968,9 +2374,14 @@
       return candidate.rating <= player.overall + 20 && candidate.reputation <= own.reputation + 8 && playerTooBig <= 12;
     }
     if (marketIntent === "bigger") {
-      return candidate.reputation >= own.reputation - 2 && candidate.rating >= own.rating - 8 && abilityGap <= (strongProspect ? 30 : 16);
+      return fitsBiggerStage(candidate, own, player);
     }
     if (marketIntent === "transfer") {
+      if (playerOutgrownClub(player, own)) {
+        if (candidate.rating < player.overall - 8 && !isMeaningfulUpgrade(candidate, own)) return false;
+        if (candidate.tier === "small" && player.overall >= own.rating + 6) return false;
+        if (candidate.rating <= own.rating + 2 && candidate.reputation <= own.reputation + 6 && !isEliteClub(candidate)) return false;
+      }
       return abilityGap <= (strongProspect ? 32 : 16);
     }
     return candidate.reputation >= own.reputation - 14 && candidate.rating >= player.overall - 8 && abilityGap <= (strongProspect ? 28 : 18);
@@ -1997,7 +2408,15 @@
     } else {
       const fit = clamp(1 - Math.abs(candidate.rating - (player.overall + 8)) / 36, 0, 1);
       chance = 0.015 + fit * 0.14 + currentReady * 0.08 + prospectFit * 0.1 + agentPull * 0.035 + reputationPull * 0.04;
-      if (marketIntent === "bigger") chance += 0.025;
+      if (marketIntent === "bigger") {
+        chance += 0.025;
+        if (!isMeaningfulUpgrade(candidate, contractClub())) chance *= 0.04;
+        if (player.overall - candidate.rating > 6) chance *= 0.08;
+        if (candidate.tier === "small" && isEliteClub(currentClub())) chance *= 0.02;
+      } else if (marketIntent === "transfer" && playerOutgrownClub(player, contractClub())) {
+        if (isEliteClub(candidate) && isMeaningfulUpgrade(candidate, contractClub())) chance += 0.08;
+        if (candidate.rating < player.overall - 6) chance *= 0.05;
+      }
       if (marketIntent === "transfer") chance += 0.018;
       if (abilityGap > 18) chance *= Math.max(0.08, prospectFit * 0.42);
       if (playerTooBig > 8) chance *= 0.16;
@@ -2016,12 +2435,20 @@
 
   function marketAttentionScore(candidate, marketIntent) {
     const player = stateContainer.state.player;
+    const own = contractClub();
     const eliteCandidate = candidate.tier === "elite" || candidate.reputation >= 88;
     if (!eliteCandidate) return 0;
-    if (player.overall >= candidate.rating - 12) return 0;
-    if (player.potential < candidate.rating - 4) return 0;
+    const outgrown = playerOutgrownClub(player, own);
+    if (outgrown) {
+      if (!isMeaningfulUpgrade(candidate, own)) return 0;
+      if (player.overall < candidate.rating - 14 && player.potential < candidate.rating - 2) return 0;
+    } else if (player.overall >= candidate.rating - 12) {
+      return 0;
+    }
+    if (player.potential < candidate.rating - 4 && player.overall < candidate.rating - 10) return 0;
     const intentBoost = marketIntent === "bigger" || marketIntent === "transfer" ? 8 : 0;
-    return player.potential - candidate.rating + intentBoost + player.reputation * 0.08;
+    const readyBoost = outgrown && player.overall >= candidate.rating - 10 ? 6 : 0;
+    return player.potential - candidate.rating + intentBoost + readyBoost + player.reputation * 0.08;
   }
 
   function logScoutingInterest(entries, newOffers, marketIntent, reason) {
@@ -2128,14 +2555,28 @@
     applyEffects(effects[strategy]);
     addLog("info", `你告诉经纪人：${labels[strategy]}。这会影响下个转会窗的询价方向，但不会保证任何俱乐部报价。`, "market");
     if (state.market.isOpen) {
-      state.market.lastOfferWeek = state.week;
-      const added = generateOffers(state.market.windowType, { append: true, reason: "strategy" });
-      if (added === 0) {
-        addLog("info", `经纪人${state.agent.name}重新询价后，暂时没有新的正式报价。`, "market");
+      if (state.market.dealDone) {
+        addLog("info", `本窗口内已完成转会/租借，经纪人${state.agent.name}不会再为你联系新的俱乐部。`, "market");
+      } else {
+        state.market.lastOfferWeek = state.week;
+        const added = generateOffers(state.market.windowType, { append: true, reason: "strategy" });
+        if (added === 0) {
+          addLog("info", `经纪人${state.agent.name}重新询价后，暂时没有新的正式报价。`, "market");
+        }
       }
     }
     saveGame(true);
     render();
+  }
+
+  function finalizeTransferWindowDeal() {
+    const state = stateContainer.state;
+    if (state.market.dealDone) return;
+    state.market.dealDone = true;
+    state.market.offers.forEach((offer) => {
+      if (offer.status === "open") offer.status = "expired";
+    });
+    addLog("info", "本窗口内已完成转会/租借，其余报价自动失效，且不会再收到新报价。", "market");
   }
 
   function rejectOffer(index) {
@@ -2183,6 +2624,7 @@
     }
     transferPlayer(offer);
     offer.status = "accepted";
+    finalizeTransferWindowDeal();
     saveGame(true);
     render();
   }
@@ -2206,6 +2648,7 @@
     }
     loanPlayer(offer);
     offer.status = "accepted";
+    finalizeTransferWindowDeal();
   }
 
   function evaluateLoanApproval(offer, parent, target) {
@@ -2265,6 +2708,7 @@
     };
     applyChoiceOutcome({ outcome, tone: "positive", tag: "market" });
     offer.status = "accepted";
+    finalizeTransferWindowDeal();
   }
 
   function transferPlayer(offer) {
@@ -2272,6 +2716,13 @@
     const player = state.player;
     const oldClub = contractClub();
     const target = club(offer.clubId);
+    trackClubMove({
+      type: offer.fee <= 0 ? "free" : "transfer",
+      fromClubId: oldClub.id,
+      toClubId: target.id,
+      fee: offer.fee,
+      feeLabel: offer.fee <= 0 ? "自由身" : money(offer.fee)
+    });
     player.clubId = target.id;
     player.parentClubId = null;
     player.loanUntilSeasonYear = null;
@@ -2293,6 +2744,15 @@
     const player = state.player;
     const parent = contractClub();
     const target = club(offer.clubId);
+    trackClubMove({
+      type: "loan",
+      fromClubId: parent.id,
+      toClubId: target.id,
+      fee: offer.fee,
+      feeLabel: "租借",
+      isLoan: true,
+      parentClubId: parent.id
+    });
     player.parentClubId = parent.id;
     player.loanUntilSeasonYear = state.seasonYear;
     player.clubId = target.id;
@@ -2316,6 +2776,65 @@
     }
   }
 
+  function pickNationalOpponent(nationality) {
+    const conf = nationConfederation(nationality);
+    const pool = NATIONALITIES.filter((name) => name !== nationality && nationConfederation(name) === conf);
+    return choice(pool.length ? pool : NATIONALITIES.filter((name) => name !== nationality));
+  }
+
+  function simulateNationalTeamMatch() {
+    const state = stateContainer.state;
+    const player = state.player;
+    const national = player.national;
+    const opponentNation = pickNationalOpponent(player.nationality);
+    const strength = nationStrength(player.nationality);
+    const oppStrength = nationStrength(opponentNation);
+    const minutes = randomInt(55, 90);
+    const importance = 0.12;
+    const contribution = contributionFromPerformance(minutes, oppStrength, importance);
+    const ownGoals = contribution.goals;
+    const oppGoals = clamp(Math.round(randomInt(0, 2) + (oppStrength - strength) / 28 + (contribution.rating - 6.8) * -0.35), 0, 4);
+    const won = ownGoals > oppGoals;
+    const drawn = ownGoals === oppGoals;
+    Object.assign(
+      contribution,
+      finalizeMatchContribution(contribution, {
+        won,
+        drawn,
+        ownGoals,
+        oppGoals,
+        isGoalkeeper: positionLine(player.position) === "goalkeeper"
+      })
+    );
+
+    national.caps += 1;
+    national.goals += contribution.goals;
+    national.assists += contribution.assists;
+    national.season.caps += 1;
+    national.season.goals += contribution.goals;
+    national.season.assists += contribution.assists;
+    player.careerStats.internationalGoals += contribution.goals;
+    player.xp += Math.round(contribution.xp * 0.75);
+    maybeImprovePlayer();
+    player.reputation = clamp(player.reputation + (won ? 2 : drawn ? 1 : 0), 0, 100);
+    player.morale = clamp(player.morale + (won ? 5 : drawn ? 2 : -1), 0, 100);
+
+    const resultText = `${player.nationality} ${ownGoals}-${oppGoals} ${opponentNation}`;
+    national.matches.unshift({
+      date: fmtDate(),
+      opponent: opponentNation,
+      result: resultText,
+      minutes,
+      goals: contribution.goals,
+      assists: contribution.assists,
+      rating: contribution.rating,
+      won,
+      drawn
+    });
+    national.matches = national.matches.slice(0, 12);
+    addLog(won ? "positive" : drawn ? "info" : "negative", `国家队比赛：${resultText}（友谊赛）。你出场 ${minutes} 分钟，评分 ${contribution.rating.toFixed(1)}${contribution.goals ? `，进 ${contribution.goals} 球` : ""}${contribution.assists ? `，${contribution.assists} 助攻` : ""}。`, "national");
+  }
+
   function maybeNationalTeamCall() {
     const state = stateContainer.state;
     const player = state.player;
@@ -2324,21 +2843,31 @@
     const threshold = 69 + Math.max(0, 78 - player.reputation) * 0.08;
     const chance = clamp((player.overall - threshold) * 8 + (seasonAvg - 6.7) * 18 + player.reputation * 0.18, 0, 85);
     if (random() * 100 < chance) {
-      player.national.caps += 1;
-      player.reputation = clamp(player.reputation + 2, 0, 100);
-      player.morale = clamp(player.morale + 6, 0, 100);
-      addLog("positive", `${player.nationality}国家队直接发来征召通知：你入选了本期名单。这不是经纪人操作，是国家队教练组的决定。`, "national");
+      player.national.callUps += 1;
+      addLog("positive", `${player.nationality}国家队征召你参加本期国际比赛日。`, "national");
+      simulateNationalTeamMatch();
     } else {
       addLog("info", `${player.nationality}国家队公布名单，你暂时没有入选。经纪人提醒：能力、出场和稳定评分都会影响下次机会。`, "national");
     }
   }
 
   function recordSeasonHonors(context) {
-    const player = stateContainer.state.player;
+    const state = stateContainer.state;
+    const player = state.player;
     recordCareerSeasonStats(player.season);
-    evaluateLeagueHonors(context);
-    evaluateEuropeanHonors(context);
     evaluateInternationalHonors(context);
+    const honorContext = {
+      ...context,
+      wonContinental: !!state.european?.won,
+      wonLeague: context.rank === 1,
+      europeanGoals: state.european?.stats?.goals || 0,
+      europeanCompetition: state.european?.competition || null,
+      internationalTitles: (player.honors || []).filter(
+        (honor) => honor.category === "international" && honor.seasonYear === context.seasonYear && honor.title.includes("冠军")
+      ).length
+    };
+    evaluateLeagueHonors(honorContext);
+    evaluateEuropeanHonors(honorContext);
   }
 
   function recordCareerSeasonStats(season) {
@@ -2347,6 +2876,7 @@
     stats.goals += season.goals;
     stats.assists += season.assists;
     stats.cleanSheets += season.cleanSheets;
+    flushSeasonToClubStint(stateContainer.state.player, season);
   }
 
   function addHonor(category, title, subtitle, tier = "standard", meta = {}) {
@@ -2375,11 +2905,12 @@
     return true;
   }
 
-  function evaluateLeagueHonors({ club: own, rank, qualification, avgRating, seasonYear }) {
+  function evaluateLeagueHonors({ club: own, rank, qualification, avgRating, seasonYear, wonContinental, wonLeague, internationalTitles }) {
     const player = stateContainer.state.player;
     const season = player.season;
     const league = LEAGUES[own.league];
     if (!league) return;
+    const hasMajorClubSuccess = wonLeague || rank <= 4 || wonContinental || ["欧冠", "欧冠资格赛", "欧联", "欧协联"].includes(qualification);
 
     if (rank === 1) {
       addHonor("club", `${league.name}冠军`, `${own.name}以联赛第 1 名结束赛季。`, "gold", { competition: league.name, seasonYear });
@@ -2390,49 +2921,51 @@
     }
 
     const leagueGoalLine = league.level > 1 ? 16 : 21;
-    const outputScore = season.goals + season.assists * 0.55 + Math.max(0, avgRating - 6.8) * 4;
-    if (positionLine(player.position) !== "goalkeeper" && season.goals >= leagueGoalLine) {
+    const topGoals = leagueTopGoals(own.league);
+    if (positionLine(player.position) !== "goalkeeper" && season.goals >= leagueGoalLine && season.goals >= topGoals) {
       addHonor("personal", `${league.name}金靴`, `${season.goals} 粒联赛进球领跑射手榜。`, "gold", { competition: league.name, goals: season.goals, seasonYear });
     }
     if (positionLine(player.position) === "goalkeeper" && season.cleanSheets >= (league.level > 1 ? 11 : 14)) {
       addHonor("personal", `${league.name}金手套`, `${season.cleanSheets} 场零封成为联赛最佳门将。`, "gold", { competition: league.name, cleanSheets: season.cleanSheets, seasonYear });
     }
-    if (season.appearances >= 15 && avgRating >= 7.15) {
+    if (hasMajorClubSuccess && season.appearances >= 15 && avgRating >= 7.15) {
       addHonor("personal", `${league.name}赛季最佳阵容`, `场均评分 ${avgRating.toFixed(2)}，入选联赛最佳阵容。`, "standard", { competition: league.name, seasonYear });
     }
-    if (season.appearances >= 18 && avgRating >= 7.38 && outputScore >= 18) {
-      addHonor("personal", `${league.name}金球`, `赛季 ${season.goals} 球 ${season.assists} 助攻，场均评分 ${avgRating.toFixed(2)}。`, "gold", { competition: league.name, seasonYear });
+    if (hasMajorClubSuccess && season.appearances >= 18 && avgRating >= 7.38 && season.goals + season.assists >= 12) {
+      addHonor("personal", `${league.name}最佳球员`, `赛季 ${season.goals} 球 ${season.assists} 助攻，场均评分 ${avgRating.toFixed(2)}，并随队取得重要成绩。`, "gold", { competition: league.name, seasonYear });
     }
-    if (league.level === 1 && season.goals >= 30) {
+    if (league.level === 1 && season.goals >= 30 && season.goals >= topGoals) {
       addHonor("personal", "欧洲金靴", `${season.goals} 粒联赛进球让你登顶欧洲射手榜。`, "legend", { competition: "欧洲联赛", goals: season.goals, seasonYear });
     }
     const ballonScore = player.overall * 0.62 + avgRating * 8 + season.goals * 0.48 + season.assists * 0.32 + player.reputation * 0.22 + (rank === 1 ? 8 : 0);
-    if (ballonScore >= 122 && random() < clamp((ballonScore - 112) / 28, 0.18, 0.82)) {
-      addHonor("personal", "金球奖", `你凭借俱乐部与个人表现被评为年度世界最佳球员。`, "legend", { competition: "世界足坛", score: Math.round(ballonScore), seasonYear });
+    const canWinBallon = wonLeague || wonContinental || internationalTitles > 0;
+    if (canWinBallon && ballonScore >= 122 && random() < clamp((ballonScore - 112) / 28, 0.18, 0.82)) {
+      addHonor("personal", "金球奖", `你凭借俱乐部与国家队的重要荣誉，以及稳定个人表现，被评为年度世界最佳球员。`, "legend", { competition: "世界足坛", score: Math.round(ballonScore), seasonYear });
     }
   }
 
-  function evaluateEuropeanHonors({ club: own, rank, qualification, avgRating, seasonYear }) {
+  function evaluateEuropeanHonors({ club: own, rank, qualification, avgRating, seasonYear, wonContinental, europeanGoals, europeanCompetition }) {
     const player = stateContainer.state.player;
     const league = LEAGUES[own.league];
     if (!league || league.level !== 1) return;
 
-    const competition = europeanCompetitionForSeason(own.league, rank, qualification);
+    const competition = europeanCompetition || europeanCompetitionForSeason(own.league, rank, qualification);
     if (!competition) return;
-    const goals = estimateCupGoals(competition, avgRating);
-    player.careerStats.europeanGoals += goals;
-    if (competition === "欧冠") player.careerStats.uclGoals += goals;
+    const goals = europeanGoals || estimateCupGoals(competition, avgRating);
+    if (!stateContainer.state.european?.stats?.appearances) {
+      player.careerStats.europeanGoals += goals;
+      if (competition === "欧冠") player.careerStats.uclGoals += goals;
+    }
 
-    const titleChance = clamp((own.rating - 80) * 0.025 + (player.overall - 78) * 0.018 + (avgRating - 6.8) * 0.12 + goals * 0.012, 0.02, competition === "欧冠" ? 0.28 : 0.38);
-    if (random() < titleChance) {
+    if (wonContinental) {
       addHonor("continental", `${competition}冠军`, `${own.name}在${competition}淘汰赛中走到最后，你贡献 ${goals} 球。`, "legend", { competition, goals, seasonYear });
     }
-    const goldenBootLine = competition === "欧冠" ? 9 : competition === "欧联" ? 8 : 7;
+    const goldenBootLine = competition === "欧冠" ? 6 : competition === "欧联" ? 5 : 4;
     if (positionLine(player.position) !== "goalkeeper" && goals >= goldenBootLine) {
       addHonor("personal", `${competition}金靴`, `${goals} 粒进球成为本赛季${competition}最佳射手。`, "legend", { competition, goals, seasonYear });
     }
-    if (avgRating >= 7.45 && goals >= Math.max(4, goldenBootLine - 4)) {
-      addHonor("personal", `${competition}最佳球员`, `你在${competition}中贡献 ${goals} 球，关键战表现突出。`, "gold", { competition, goals, seasonYear });
+    if (wonContinental && avgRating >= 7.2 && goals >= Math.max(2, goldenBootLine - 3)) {
+      addHonor("personal", `${competition}最佳球员`, `你在${competition}夺冠征程中贡献 ${goals} 球，关键战表现突出。`, "gold", { competition, goals, seasonYear });
     }
   }
 
@@ -2508,27 +3041,56 @@
   function simulateInternationalTournament(tournament, avgRating, seasonYear) {
     const state = stateContainer.state;
     const player = state.player;
+    const national = player.national;
     const selectionChance = clamp((player.overall - 68) * 0.08 + (player.reputation - 45) * 0.012 + (avgRating - 6.6) * 0.12, 0.05, 0.96);
     if (random() > selectionChance) return;
 
     const appearances = randomInt(2, tournament.name === "世界杯" ? 7 : 6);
-    const goals = estimateInternationalGoals(appearances, avgRating);
-    player.national.caps += appearances;
-    player.national.goals += goals;
+    let goals = 0;
+    let assists = 0;
+    for (let i = 0; i < appearances; i += 1) {
+      const opponentNation = pickNationalOpponent(player.nationality);
+      const minutes = randomInt(45, 90);
+      const contribution = contributionFromPerformance(minutes, nationStrength(opponentNation), 0.18);
+      const ownGoals = contribution.goals;
+      const oppGoals = clamp(randomInt(0, 3), 0, 4);
+      goals += contribution.goals;
+      assists += contribution.assists;
+      national.matches.unshift({
+        date: `${tournament.year}-${String(randomInt(6, 7)).padStart(2, "0")}-${String(randomInt(10, 28)).padStart(2, "0")}`,
+        opponent: opponentNation,
+        result: `${player.nationality} ${ownGoals}-${oppGoals} ${opponentNation}`,
+        minutes,
+        goals: contribution.goals,
+        assists: contribution.assists,
+        rating: contribution.rating,
+        tournament: tournament.name,
+        won: ownGoals > oppGoals,
+        drawn: ownGoals === oppGoals
+      });
+    }
+    national.matches = national.matches.slice(0, 16);
+    national.caps += appearances;
+    national.goals += goals;
+    national.assists += assists;
+    national.season.caps += appearances;
+    national.season.goals += goals;
+    national.season.assists += assists;
     player.careerStats.internationalGoals += goals;
     addLog("info", `${player.nationality}国家队征召你参加${tournament.year}年${tournament.name}，你出场 ${appearances} 次，打进 ${goals} 球。`, "national");
 
     const strength = nationStrength(player.nationality);
     const winChance = clamp((strength - 74) * 0.012 + (player.overall - 78) * 0.01 + (avgRating - 6.8) * 0.06 + goals * 0.01, 0.01, tournament.name === "世界杯" ? 0.28 : 0.42);
-    if (random() < winChance) {
+    const wonTournament = random() < winChance;
+    if (wonTournament) {
       addHonor("international", `${tournament.name}冠军`, `${player.nationality}在${tournament.year}年${tournament.name}夺冠，你贡献 ${goals} 球。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
     }
     const goldenBootLine = tournament.name === "世界杯" ? 6 : 5;
     if (positionLine(player.position) !== "goalkeeper" && goals >= goldenBootLine) {
       addHonor("personal", `${tournament.name}金靴`, `${goals} 粒进球成为${tournament.year}年${tournament.name}最佳射手。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
     }
-    if (avgRating >= 7.45 && goals >= Math.max(3, goldenBootLine - 2)) {
-      addHonor("personal", `${tournament.name}金球`, `你在${tournament.year}年${tournament.name}中成为赛事最佳球员。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
+    if (wonTournament && avgRating >= 7.2 && goals >= Math.max(2, goldenBootLine - 2)) {
+      addHonor("personal", `${tournament.name}最佳球员`, `你在${tournament.year}年${tournament.name}夺冠征程中成为赛事最佳球员。`, "legend", { competition: tournament.name, year: tournament.year, goals, seasonYear });
     }
   }
 
@@ -2555,7 +3117,9 @@
     const avgRating = player.season.ratedMatches ? player.season.ratingTotal / player.season.ratedMatches : 0;
     player.reputation = clamp(player.reputation + Math.max(0, avgRating - 6.4) * 3 + player.season.goals * 0.18 + player.season.assists * 0.12, 0, 100);
     addLog("warning", `${state.seasonYear}/${String(state.seasonYear + 1).slice(2)} 赛季结束：${own.name}排名第 ${rank}，${qualification || "无额外资格"}。你的赛季数据：${player.season.appearances} 场 ${player.season.goals} 球 ${player.season.assists} 助攻。`, "career");
+    refreshClubQualifications();
     recordSeasonHonors({ club: own, rank, qualification, avgRating, seasonYear: state.seasonYear });
+    const nextEuropean = europeanCompetitionForSeason(own.league, rank, qualification);
     maybeBreakPotential(avgRating, qualification);
     returnFromLoanIfNeeded();
     handleContractDecision();
@@ -2567,7 +3131,12 @@
     state.euroBonusLeagues = drawEuroBonusLeagues();
     state.leagues = {};
     ensureLeagueSeason(currentClub().league);
+    setupEuropeanCampaign(nextEuropean, own.id);
+    refreshClubQualifications();
     player.season = freshSeasonStats();
+    if (player.national?.season) {
+      player.national.season = { caps: 0, goals: 0, assists: 0 };
+    }
     addLog("info", euroBonusSummary(), "table");
     saveGame(true);
   }
@@ -2596,6 +3165,13 @@
     if (!player.parentClubId) return;
     const loanClub = currentClub();
     const parent = club(player.parentClubId);
+    trackClubMove({
+      type: "loanReturn",
+      fromClubId: loanClub.id,
+      toClubId: parent.id,
+      fee: 0,
+      feeLabel: "租借回归"
+    });
     player.clubId = parent.id;
     player.parentClubId = null;
     player.loanUntilSeasonYear = null;
@@ -2630,6 +3206,7 @@
     const fallback = findFallbackClub();
     const offer = makeOffer(fallback);
     offer.years = randomInt(1, 3);
+    offer.fee = 0;
     transferPlayer(offer);
     addLog("warning", `合同到期后${own.name}没有续约，你以自由身寻找下家。`, "agent");
   }
@@ -2670,6 +3247,146 @@
     Object.keys(defaults).forEach((key) => {
       if (typeof stats[key] !== "number") stats[key] = defaults[key];
     });
+  }
+
+  function freshCareerHistory() {
+    return { transfers: [], clubStints: [] };
+  }
+
+  function getActiveClubStint(player) {
+    return (player.careerHistory?.clubStints || []).find((stint) => stint.toSeasonYear == null) || null;
+  }
+
+  function fmtCareerDotDate(seasonYear, week) {
+    const date = new Date(seasonYear, 6, 12 + week * 7);
+    return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  function fmtCareerFullDate(seasonYear, week) {
+    const date = new Date(seasonYear, 6, 12 + week * 7);
+    return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getDate()).padStart(2, "0")}`;
+  }
+
+  function fmtStintRange(stint) {
+    const start = fmtCareerFullDate(stint.fromSeasonYear, stint.fromWeek);
+    const end = stint.toSeasonYear == null ? "至今" : fmtCareerFullDate(stint.toSeasonYear, stint.toWeek);
+    return `${start} ~ ${end}`;
+  }
+
+  function openClubStint(player, clubId, meta = {}) {
+    const state = stateContainer.state;
+    if (!player.careerHistory) player.careerHistory = freshCareerHistory();
+    player.careerHistory.clubStints.push({
+      clubId,
+      fromSeasonYear: state.seasonYear,
+      fromWeek: state.week,
+      toSeasonYear: null,
+      toWeek: null,
+      appearances: 0,
+      goals: 0,
+      assists: 0,
+      isLoan: !!meta.isLoan,
+      parentClubId: meta.parentClubId || null
+    });
+  }
+
+  function flushSeasonToClubStint(player, season = player.season) {
+    const active = getActiveClubStint(player);
+    if (!active || !season) return;
+    active.appearances += season.appearances;
+    active.goals += season.goals;
+    active.assists += season.assists;
+    season.appearances = 0;
+    season.goals = 0;
+    season.assists = 0;
+  }
+
+  function closeCurrentClubStint(player, state = stateContainer.state) {
+    flushSeasonToClubStint(player);
+    const active = getActiveClubStint(player);
+    if (!active || !state) return;
+    active.toSeasonYear = state.seasonYear;
+    active.toWeek = state.week;
+  }
+
+  function recordCareerTransfer({ type, fromClubId, toClubId, fee = 0, feeLabel = "" }) {
+    const state = stateContainer.state;
+    const player = state.player;
+    if (!player.careerHistory) player.careerHistory = freshCareerHistory();
+    player.careerHistory.transfers.unshift({
+      type,
+      fromClubId,
+      toClubId,
+      fee,
+      feeLabel,
+      seasonYear: state.seasonYear,
+      week: state.week,
+      date: fmtDate()
+    });
+    player.careerHistory.transfers = player.careerHistory.transfers.slice(0, 40);
+  }
+
+  function trackClubMove({ type, fromClubId, toClubId, fee = 0, feeLabel = "", isLoan = false, parentClubId = null }) {
+    const player = stateContainer.state.player;
+    closeCurrentClubStint(player);
+    recordCareerTransfer({ type, fromClubId, toClubId, fee, feeLabel });
+    openClubStint(player, toClubId, { isLoan, parentClubId });
+  }
+
+  function normalizeCareerHistory(player, state) {
+    if (!player.careerHistory) player.careerHistory = freshCareerHistory();
+    if (!Array.isArray(player.careerHistory.transfers)) player.careerHistory.transfers = [];
+    if (!Array.isArray(player.careerHistory.clubStints)) player.careerHistory.clubStints = [];
+
+    const active = getActiveClubStint(player);
+    if (!player.careerHistory.clubStints.length) {
+      player.careerHistory.clubStints.push({
+        clubId: player.clubId,
+        fromSeasonYear: state?.seasonYear || 2026,
+        fromWeek: 0,
+        toSeasonYear: null,
+        toWeek: null,
+        appearances: Math.max(0, (player.careerStats?.appearances || 0) - (player.season?.appearances || 0)),
+        goals: Math.max(0, (player.careerStats?.goals || 0) - (player.season?.goals || 0)),
+        assists: Math.max(0, (player.careerStats?.assists || 0) - (player.season?.assists || 0)),
+        isLoan: !!player.parentClubId,
+        parentClubId: player.parentClubId || null
+      });
+      if (!player.careerHistory.transfers.length) {
+        player.careerHistory.transfers.push({
+          type: "join",
+          fromClubId: null,
+          toClubId: player.clubId,
+          fee: 0,
+          feeLabel: player.origin === "academy" ? "青训加盟" : "一线队加盟",
+          seasonYear: state?.seasonYear || 2026,
+          week: state?.week || 0,
+          date: fmtCareerFullDate(state?.seasonYear || 2026, state?.week || 0).replace(/\./g, "-")
+        });
+      }
+    } else if (active && active.clubId !== player.clubId) {
+      closeCurrentClubStint(player, state);
+      openClubStint(player, player.clubId, { isLoan: !!player.parentClubId, parentClubId: player.parentClubId });
+    } else if (!active) {
+      openClubStint(player, player.clubId, { isLoan: !!player.parentClubId, parentClubId: player.parentClubId });
+    }
+  }
+
+  function clubBadge(clubId, small = false) {
+    const team = club(clubId);
+    if (!team) return "";
+    return `<span class="club-badge ${small ? "small" : ""}" title="${escapeHtml(team.name)}">${escapeHtml(team.name.slice(0, 1))}</span>`;
+  }
+
+  function contractExpiryLabel(player, state) {
+    const expiry = new Date(state.seasonYear + player.contractYears, 5, 30);
+    return `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}-${String(expiry.getDate()).padStart(2, "0")}`;
+  }
+
+  function honorTierIcon(tier) {
+    if (tier === "legend") return "🏆";
+    if (tier === "gold") return "🥇";
+    return "🎖️";
   }
 
   function placementLabel(leagueId, rank, total) {
@@ -2727,10 +3444,8 @@
       season: freshSeasonStats(),
       careerStats: freshCareerStats(),
       honors: [],
-      national: {
-        caps: 0,
-        goals: 0
-      }
+      national: normalizeNationalData(null),
+      careerHistory: freshCareerHistory()
     };
     player.value = calculateValue(player);
     player.wage = calculateWage(player, startingClub);
@@ -2763,9 +3478,12 @@
         windowType: null,
         strategy: "stay",
         offers: [],
-        lastOfferWeek: null
+        lastOfferWeek: null,
+        dealDone: false
       },
       euroBonusLeagues: drawEuroBonusLeagues(),
+      clubQualifications: {},
+      european: null,
       leagues: {},
       logs: [],
       pendingChoice: null
@@ -2777,7 +3495,17 @@
     const form = new FormData(event.currentTarget);
     stateContainer.state = createInitialState(form);
     ensureLeagueSeason(currentClub().league);
+    refreshClubQualifications();
+    ensureEuropeanCampaign();
     const state = stateContainer.state;
+    recordCareerTransfer({
+      type: "join",
+      fromClubId: null,
+      toClubId: state.player.clubId,
+      fee: 0,
+      feeLabel: state.player.origin === "academy" ? "青训加盟" : "一线队加盟"
+    });
+    openClubStint(state.player, state.player.clubId);
     addLog("positive", `${state.player.name}，16 岁，${state.player.nationality}${positionName(state.player.position)}，正式开启生涯。当前俱乐部：${currentClub().name}。`, "career");
     addLog("info", `经纪人${state.agent.name}与你签约：会通知俱乐部兴趣、报价和续约情况，但不能替你强行加盟任何球队。`, "agent");
     addLog("info", euroBonusSummary(), "table");
@@ -2808,8 +3536,7 @@
     renderMatch();
     renderTable();
     renderMarket();
-    renderHonors();
-    renderProfile();
+    renderCareerRecord();
     renderChoiceModal();
     window.__roadToKingState = state;
   }
@@ -2832,6 +3559,7 @@
   }
 
   function renderTabs() {
+    if (["honors", "profile"].includes(stateContainer.activeTab)) stateContainer.activeTab = "record";
     $$(".tab").forEach((button) => {
       button.classList.toggle("active", button.dataset.tab === stateContainer.activeTab);
     });
@@ -2912,7 +3640,7 @@
           <div><span>强化训练</span><strong>${info.intenseSessions} 次</strong></div>
           <div><span>比赛预估</span><strong>${info.matchSessions} 场</strong></div>
         </div>
-        <p class="small-note">满格后固定让 1 项属性 +1。高概率从${attributePriorityLabels(player.position)}中抽取，低概率从全部属性中抽取；综合能力按${positionName(player.position)}权重计算：${overallWeightLabels(player.position)}。</p>
+        <p class="small-note">满格后固定让 1 项属性 +1。高概率从${attributePriorityLabels(player.position)}中抽取，低概率从${growableAttributeLabels(player.position) || "位置相关属性"}中抽取；不会浪费在门将等与位置无关的属性上。综合能力按${positionName(player.position)}权重计算：${overallWeightLabels(player.position)}。</p>
       </section>
     `;
   }
@@ -2931,6 +3659,148 @@
       .join("");
   }
 
+  function ensureEuropeanCampaign() {
+    const state = stateContainer.state;
+    const own = currentClub();
+    if (LEAGUES[own.league]?.level !== 1) return;
+    if (state.european?.clubId === own.id) return;
+    ensureLeagueSeason(own.league);
+    const rows = sortedTable(own.league);
+    const rank = rows.findIndex((row) => row.teamId === own.id) + 1;
+    if (!rank) return;
+    const qualification = placementLabel(own.league, rank, rows.length);
+    const competition = europeanCompetitionForSeason(own.league, rank, qualification);
+    if (!competition) return;
+    setupEuropeanCampaign(competition, own.id);
+    state.european.schedule.forEach((match) => {
+      if (match.week < state.week && !match.played) {
+        match.played = true;
+        match.homeGoals = randomInt(0, 2);
+        match.awayGoals = randomInt(0, 2);
+      }
+    });
+    if (state.european.schedule.some((match) => match.played && !state.european.won)) {
+      const lastPlayed = [...state.european.schedule].reverse().find((match) => match.played);
+      if (lastPlayed) {
+        const ownGoals = lastPlayed.home === own.id ? lastPlayed.homeGoals : lastPlayed.awayGoals;
+        const oppGoals = lastPlayed.home === own.id ? lastPlayed.awayGoals : lastPlayed.homeGoals;
+        if (ownGoals < oppGoals) state.european.eliminated = true;
+        if (lastPlayed.stage === "决赛" && ownGoals > oppGoals) state.european.won = true;
+      }
+    }
+  }
+
+  function renderLeaderboardBlock(title, rows, valueKey, valueLabel) {
+    if (!rows.length) return "";
+    return `
+      <div class="leaderboard-block">
+        <h4>${title}</h4>
+        <div class="table-wrap compact">
+          <table class="mini-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>球员</th>
+                <th>${valueLabel}</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows
+                .slice(0, 10)
+                .map((row, index) => {
+                  const value = row[valueKey];
+                  const display = valueKey === "rating" && typeof value === "number" ? value.toFixed(2) : value;
+                  return `
+                    <tr class="${row.isUser ? "highlight" : ""}">
+                      <td>${index + 1}</td>
+                      <td>
+                        <strong>${escapeHtml(row.name)}</strong>
+                        <small>${escapeHtml(row.team)}</small>
+                      </td>
+                      <td><strong>${display}</strong></td>
+                    </tr>
+                  `;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderEuropeanPanel(state, own) {
+    const euro = state.european;
+    if (!euro || euro.clubId !== own.id) return "";
+    const stats = euro.stats;
+    const avgEuro = stats.ratedMatches ? (stats.ratingTotal / stats.ratedMatches).toFixed(2) : "无";
+    const status = euro.won ? "已夺冠" : euro.eliminated ? "已淘汰" : "进行中";
+    const nextEuro = getNextEuropeanMatch();
+    const scheduleRows = euro.schedule
+      .map((match) => {
+        const isHome = match.home === own.id;
+        const opponent = club(isHome ? match.away : match.home);
+        const result = match.played ? `${match.homeGoals}-${match.awayGoals}` : `第 ${match.week + 1} 周`;
+        const rowClass = match.played ? "" : match.week === state.week ? "highlight" : "";
+        return `
+          <tr class="${rowClass}">
+            <td>${match.stage}</td>
+            <td>${isHome ? "主场" : "客场"} vs ${escapeHtml(opponent.name)}</td>
+            <td>${result}</td>
+          </tr>
+        `;
+      })
+      .join("");
+    return `
+      <section class="section">
+        <div class="section-heading">
+          <h3>${euro.competition} · ${status}</h3>
+          ${nextEuro ? `<span class="tag gold">下场 ${nextEuro.stage}</span>` : ""}
+        </div>
+        <div class="match-line"><span>你的欧战数据</span><strong>${stats.appearances} 场 ${stats.goals} 球 ${stats.assists} 助攻 · 均分 ${avgEuro}</strong></div>
+        <p class="small-note">欧战有额外成长加成，赛程与联赛并行推进。</p>
+        <div class="table-wrap compact">
+          <table class="mini-table">
+            <thead>
+              <tr>
+                <th>阶段</th>
+                <th>对阵</th>
+                <th>赛果/时间</th>
+              </tr>
+            </thead>
+            <tbody>${scheduleRows}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderNationalPanel(player) {
+    const national = player.national;
+    const season = national.season || { caps: 0, goals: 0, assists: 0 };
+    const recentMatches = national.matches
+      .slice(0, 6)
+      .map(
+        (match) => `
+          <article class="mini-log">
+            <strong>${escapeHtml(match.result)}</strong>
+            <span>${match.date} · ${match.minutes} 分钟 · 评分 ${match.rating.toFixed(1)}${match.goals ? ` · ${match.goals} 球` : ""}${match.assists ? ` · ${match.assists} 助攻` : ""}</span>
+          </article>
+        `
+      )
+      .join("");
+    return `
+      <section class="section">
+        <h3>国家队</h3>
+        <div class="match-line"><span>生涯</span><strong>${national.caps} 场 · ${national.goals} 球 · ${national.assists} 助攻 · ${national.callUps} 次征召</strong></div>
+        <div class="match-line"><span>本季</span><strong>${season.caps} 场 · ${season.goals} 球 · ${season.assists} 助攻</strong></div>
+        <div class="mini-log-list">
+          ${recentMatches || `<p class="small-note">暂无国家队比赛记录，国际比赛日（第 8/15/25/32 周）有机会入选。</p>`}
+        </div>
+      </section>
+    `;
+  }
+
   function renderMatch() {
     const state = stateContainer.state;
     const windowDue = isTransferWindowDue();
@@ -2938,33 +3808,40 @@
     const own = currentClub();
     const opponent = match ? club(match.home === own.id ? match.away : match.home) : null;
     const averageRating = state.player.season.ratedMatches ? (state.player.season.ratingTotal / state.player.season.ratedMatches).toFixed(2) : "无";
+    const competitionLabel =
+      match?.type === "european"
+        ? `${state.european?.competition || "欧战"} · ${match.stage || ""}`
+        : LEAGUES[own.league].name;
     $("#matchView").innerHTML = `
-      <div class="two-column">
-        <section class="section match-card">
-          <h3>下一场</h3>
-          ${
-            match
-              ? `
-                <div class="match-line"><span>赛事</span><strong>${LEAGUES[own.league].name}</strong></div>
-                <div class="match-line"><span>对手</span><strong>${match.home === own.id ? "主场" : "客场"} vs ${opponent.name}</strong></div>
-                <div class="match-line"><span>对手评级</span><strong>${opponent.rating}</strong></div>
-                <div class="match-line"><span>你的角色</span><strong>${state.player.role}</strong></div>
-              `
-              : `<p class="small-note">本周没有正式比赛，推进后会进入训练或赛季结算。</p>`
-          }
-          <div class="action-grid">
-            <button class="primary-button" type="button" data-action="advance-detailed">${windowDue ? "先处理转会窗" : "文字播报"}</button>
-            <button class="secondary-button" type="button" data-action="advance-skip" ${windowDue ? "disabled" : ""}>直接赛果</button>
-          </div>
-        </section>
-        <section class="section">
-          <h3>赛季数据</h3>
-          <div class="match-line"><span>出场</span><strong>${state.player.season.appearances}</strong></div>
-          <div class="match-line"><span>进球</span><strong>${state.player.season.goals}</strong></div>
-          <div class="match-line"><span>助攻</span><strong>${state.player.season.assists}</strong></div>
-          <div class="match-line"><span>场均评分</span><strong>${averageRating}</strong></div>
-          <div class="match-line"><span>国家队</span><strong>${state.player.national.caps} 次征召/出场</strong></div>
-        </section>
+      <div class="match-layout">
+        <div class="two-column">
+          <section class="section match-card">
+            <h3>下一场</h3>
+            ${
+              match
+                ? `
+                  <div class="match-line"><span>赛事</span><strong>${competitionLabel}</strong></div>
+                  <div class="match-line"><span>对手</span><strong>${match.home === own.id ? "主场" : "客场"} vs ${opponent.name}</strong></div>
+                  <div class="match-line"><span>对手评级</span><strong>${opponent.rating}</strong></div>
+                  <div class="match-line"><span>你的角色</span><strong>${state.player.role}</strong></div>
+                `
+                : `<p class="small-note">本周没有正式比赛，推进后会进入训练、国家队或赛季结算。</p>`
+            }
+            <div class="action-grid">
+              <button class="primary-button" type="button" data-action="advance-detailed">${windowDue ? "先处理转会窗" : "文字播报"}</button>
+              <button class="secondary-button" type="button" data-action="advance-skip" ${windowDue ? "disabled" : ""}>直接赛果</button>
+            </div>
+          </section>
+          <section class="section">
+            <h3>联赛赛季数据</h3>
+            <div class="match-line"><span>出场</span><strong>${state.player.season.appearances}</strong></div>
+            <div class="match-line"><span>进球</span><strong>${state.player.season.goals}</strong></div>
+            <div class="match-line"><span>助攻</span><strong>${state.player.season.assists}</strong></div>
+            <div class="match-line"><span>场均评分</span><strong>${averageRating}</strong></div>
+          </section>
+        </div>
+        ${renderEuropeanPanel(state, own)}
+        ${renderNationalPanel(state.player)}
       </div>
     `;
   }
@@ -2974,6 +3851,7 @@
     const leagueId = currentClub().league;
     const rules = effectiveRules(leagueId);
     const rows = sortedTable(leagueId);
+    const boards = buildLeagueLeaderboards(leagueId);
     $("#tableView").innerHTML = `
       <section class="section">
         <h3>${rules.name} 积分榜</h3>
@@ -3020,6 +3898,15 @@
           </table>
         </div>
       </section>
+      <section class="section">
+        <h3>球员榜</h3>
+        <p class="small-note">联赛射手榜、助攻榜与评分榜；你在榜中会高亮显示。</p>
+        <div class="leaderboards-grid">
+          ${renderLeaderboardBlock("进球榜", boards.scorers, "goals", "进球")}
+          ${renderLeaderboardBlock("助攻榜", boards.assisters, "assists", "助攻")}
+          ${renderLeaderboardBlock("评分榜", boards.ratings, "rating", "均分")}
+        </div>
+      </section>
     `;
   }
 
@@ -3046,124 +3933,103 @@
             <button class="secondary-button" type="button" data-strategy="loan" ${loanDisabled}>寻求外租</button>
             <button class="danger-button" type="button" data-strategy="transfer">寻求转会</button>
           </div>
-          <p class="small-note">外租会保留母队合同并在赛季末回归；转会会永久更换俱乐部、合同和薪水。俱乐部是否报价、母队是否放人和角色都由市场结算。</p>
+          <p class="small-note">外租会保留母队合同并在赛季末回归；转会会永久更换俱乐部、合同和薪水。「推荐给更大俱乐部」会综合你的能力、潜力与当前俱乐部层级，只向声望/实力真正高一档的球队询价。</p>
         </section>
-        <section class="section">
-          <h3>正式报价</h3>
-          <div class="offer-list">
-            ${renderOffers()}
+        <section class="section offer-panel ${stateContainer.marketOffersCollapsed ? "is-collapsed" : ""}">
+          <div class="section-heading">
+            <h3>正式报价</h3>
+            <button class="ghost-button compact-button" type="button" data-action="toggle-market-offers">
+              ${stateContainer.marketOffersCollapsed ? "展开" : "折叠"}
+            </button>
           </div>
+          ${
+            stateContainer.marketOffersCollapsed
+              ? `<p class="small-note">报价列表已折叠。${state.market.dealDone ? "本窗口已完成操作，不再接收新报价。" : `待回应 ${state.market.offers.filter((offer) => offer.status === "open").length} 条。`}</p>`
+              : `<div class="offer-list">${renderOffers()}</div>`
+          }
         </section>
       </div>
+    `;
+  }
+
+  function renderOfferCard(offer, index) {
+    const target = club(offer.clubId);
+    const offerTitle = offer.kind === "academyPoach" ? `${target.name}梯队挖角` : offer.kind === "seniorLoan" ? `${target.name}租借邀请` : target.name;
+    const detail =
+      offer.kind === "seniorLoan"
+        ? `${LEAGUES[target.league].name} · 租借费 ${money(offer.fee)} · 承担薪水 ${offer.wageShare}% · 至赛季末 · ${offer.role === "租借主力" ? "承诺主力" : "轮换培养"}`
+        : `${LEAGUES[target.league].name} · ${offer.kind === "academyPoach" ? "培养补偿" : "转会费"} ${money(offer.fee)} · ${wage(offer.wage)} · ${offer.years} 年 · 定位 ${offer.role}`;
+    const openLabel = offer.kind === "seniorLoan" ? "同意外租" : "同意个人条款";
+    const statusLabel =
+      offer.status === "open"
+        ? openLabel
+        : offer.status === "accepted"
+          ? "已接受"
+          : offer.status === "declined"
+            ? "你已拒绝"
+            : offer.status === "expired"
+              ? "已失效"
+              : "母队已拒绝";
+    const euroLabel = clubEuropeanProspectLabel(offer.clubId);
+    const euroTag = euroLabel ? `<span class="tag ${placementTagClass(euroLabel)}">${euroLabel}</span>` : "";
+    const cardClass = offer.status === "accepted" ? "offer-card accepted" : offer.status === "open" ? "offer-card" : "offer-card muted";
+    return `
+      <article class="${cardClass}">
+        <h4>${offerTitle} ${euroTag}</h4>
+        <p>${detail}${euroLabel ? ` · 下赛季预计参加${euroLabel}` : ""}</p>
+        <div class="offer-actions">
+          <button class="primary-button" type="button" data-offer="${index}" ${offer.status !== "open" ? "disabled" : ""}>
+            ${statusLabel}
+          </button>
+          <button class="ghost-button" type="button" data-offer-reject="${index}" ${offer.status !== "open" ? "disabled" : ""}>
+            拒绝
+          </button>
+        </div>
+      </article>
     `;
   }
 
   function renderOffers() {
-    const offers = stateContainer.state.market.offers;
+    const state = stateContainer.state;
+    const offers = state.market.offers || [];
     if (!offers.length) return `<p class="small-note">暂时没有正式报价。</p>`;
-    return offers
-      .map((offer, index) => {
-        const target = club(offer.clubId);
-        const offerTitle = offer.kind === "academyPoach" ? `${target.name}梯队挖角` : offer.kind === "seniorLoan" ? `${target.name}租借邀请` : target.name;
-        const detail =
-          offer.kind === "seniorLoan"
-            ? `${LEAGUES[target.league].name} · 租借费 ${money(offer.fee)} · 承担薪水 ${offer.wageShare}% · 至赛季末 · ${offer.role === "租借主力" ? "承诺主力" : "轮换培养"}`
-            : `${LEAGUES[target.league].name} · ${offer.kind === "academyPoach" ? "培养补偿" : "转会费"} ${money(offer.fee)} · ${wage(offer.wage)} · ${offer.years} 年 · 定位 ${offer.role}`;
-        const openLabel = offer.kind === "seniorLoan" ? "同意外租" : "同意个人条款";
-        const statusLabel =
-          offer.status === "open"
-            ? openLabel
-            : offer.status === "accepted"
-              ? "已接受"
-              : offer.status === "declined"
-                ? "你已拒绝"
-                : "母队已拒绝";
-        return `
-          <article class="offer-card">
-            <h4>${offerTitle}</h4>
-            <p>${detail}</p>
-            <div class="offer-actions">
-              <button class="primary-button" type="button" data-offer="${index}" ${offer.status !== "open" ? "disabled" : ""}>
-                ${statusLabel}
-              </button>
-              <button class="ghost-button" type="button" data-offer-reject="${index}" ${offer.status !== "open" ? "disabled" : ""}>
-                拒绝
-              </button>
-            </div>
-          </article>
-        `;
-      })
-      .join("");
-  }
 
-  function renderHonors() {
-    const player = stateContainer.state.player;
-    const honors = player.honors || [];
-    const stats = player.careerStats || freshCareerStats();
-    const personalCount = honors.filter((honor) => honor.category === "personal").length;
-    const clubCount = honors.filter((honor) => honor.category === "club" || honor.category === "continental").length;
-    const internationalCount = honors.filter((honor) => honor.category === "international").length;
-    $("#honorsView").innerHTML = `
-      <div class="honors-layout">
-        <section class="honor-summary-grid">
-          <article class="honor-summary">
-            <span>奖杯</span>
-            <strong>${stats.trophies}</strong>
-            <small>俱乐部 / 国家队冠军</small>
-          </article>
-          <article class="honor-summary">
-            <span>个人奖</span>
-            <strong>${stats.personalAwards}</strong>
-            <small>金球、金靴、最佳阵容</small>
-          </article>
-          <article class="honor-summary">
-            <span>欧冠进球</span>
-            <strong>${stats.uclGoals}</strong>
-            <small>欧冠正赛累计</small>
-          </article>
-          <article class="honor-summary">
-            <span>国家队进球</span>
-            <strong>${stats.internationalGoals}</strong>
-            <small>${player.national.caps} 次国家队出场</small>
-          </article>
-        </section>
+    const pending = offers.map((offer, index) => ({ offer, index })).filter(({ offer }) => offer.status === "open");
+    const rejected = offers
+      .map((offer, index) => ({ offer, index }))
+      .filter(({ offer }) => ["declined", "rejected", "expired"].includes(offer.status));
+    const accepted = offers.map((offer, index) => ({ offer, index })).filter(({ offer }) => offer.status === "accepted");
 
-        <section class="section">
-          <div class="section-heading">
-            <h3>个人荣誉室</h3>
-            <span class="tag gold">${honors.length} 项</span>
+    const pendingHtml = pending.length
+      ? pending.map(({ offer, index }) => renderOfferCard(offer, index)).join("")
+      : `<p class="small-note">暂无待回应报价。</p>`;
+    const rejectedHtml = rejected.length
+      ? rejected.map(({ offer, index }) => renderOfferCard(offer, index)).join("")
+      : `<p class="small-note">暂无已拒绝或失效报价。</p>`;
+    const acceptedHtml = accepted.length
+      ? `<div class="offer-accepted-banner">${accepted.map(({ offer, index }) => renderOfferCard(offer, index)).join("")}</div>`
+      : "";
+
+    return `
+      ${state.market.dealDone ? `<p class="small-note offer-notice">本窗口已完成转会/租借，不再接收新报价。</p>` : ""}
+      ${acceptedHtml}
+      <div class="offer-columns">
+        <div class="offer-column">
+          <div class="offer-column-heading">
+            <h4>待回应</h4>
+            <span class="tag green">${pending.length}</span>
           </div>
-          <div class="honor-splits">
-            <span>个人 ${personalCount}</span>
-            <span>俱乐部/洲际 ${clubCount}</span>
-            <span>国家队 ${internationalCount}</span>
+          ${pendingHtml}
+        </div>
+        <div class="offer-column">
+          <div class="offer-column-heading">
+            <h4>已拒绝 / 失效</h4>
+            <span class="tag">${rejected.length}</span>
           </div>
-          <div class="honor-list">
-            ${renderHonorList(honors)}
-          </div>
-        </section>
+          ${rejectedHtml}
+        </div>
       </div>
     `;
-  }
-
-  function renderHonorList(honors) {
-    if (!honors.length) {
-      return `<p class="small-note">还没有正式荣誉。赛季末会根据联赛排名、个人数据、欧洲赛事和国家队大赛进行结算。</p>`;
-    }
-    return honors
-      .map(
-        (honor) => `
-          <article class="honor-card ${honor.tier || ""}">
-            <div>
-              <span>${honor.date || ""} · ${honorCategoryLabel(honor.category)}</span>
-              <h4>${escapeHtml(honor.title)}</h4>
-              <p>${escapeHtml(honor.subtitle || "")}</p>
-            </div>
-            <strong>${honor.tier === "legend" ? "传奇" : honor.tier === "gold" ? "金" : "荣誉"}</strong>
-          </article>
-        `
-      )
-      .join("");
   }
 
   function honorCategoryLabel(category) {
@@ -3175,56 +4041,275 @@
     }[category] || "荣誉";
   }
 
-  function renderProfile() {
+  function renderCareerRecord() {
     const state = stateContainer.state;
     const player = state.player;
-    $("#profileView").innerHTML = `
-      <div class="two-column">
-        <section class="section profile-summary">
-          <h3>球员档案</h3>
-          <div class="match-line"><span>姓名</span><strong>${escapeHtml(player.name)}</strong></div>
-          <div class="match-line"><span>年龄</span><strong>${player.age}</strong></div>
-          <div class="match-line"><span>国籍</span><strong>${player.nationality}</strong></div>
-          <div class="match-line"><span>俱乐部</span><strong>${currentClub().name}</strong></div>
-          ${player.parentClubId ? `<div class="match-line"><span>租借自</span><strong>${club(player.parentClubId).name}</strong></div>` : ""}
-          <div class="match-line"><span>能力/潜力</span><strong>${player.overall}/${player.potential}</strong></div>
-          <div class="match-line"><span>声望</span><strong>${Math.round(player.reputation)}</strong></div>
-          <div class="pill-row">
-            <span class="tag green">${positionName(player.position)}</span>
-            <span class="tag">${player.origin === "academy" ? "豪门青训" : "小球队一线队"}</span>
-            <span class="tag gold">${player.role}</span>
+    normalizeCareerHistory(player, state);
+    const honors = player.honors || [];
+    const stats = player.careerStats || freshCareerStats();
+    const own = currentClub();
+    const parent = parentClub();
+    const activeStint = getActiveClubStint(player);
+    const displayStints = (player.careerHistory?.clubStints || [])
+      .slice()
+      .reverse()
+      .map((stint) => {
+        const live =
+          stint === activeStint
+            ? {
+                appearances: stint.appearances + player.season.appearances,
+                goals: stint.goals + player.season.goals,
+                assists: stint.assists + player.season.assists
+              }
+            : {
+                appearances: stint.appearances,
+                goals: stint.goals,
+                assists: stint.assists
+              };
+        return { stint, ...live };
+      });
+    const transfers = player.careerHistory?.transfers || [];
+    const national = player.national;
+    const debutMatch = national.matches.length ? national.matches[national.matches.length - 1] : null;
+    const sortedHonors = sortHonorsForRecord(honors, stateContainer.honorSort);
+
+    $("#recordView").innerHTML = `
+      <div class="record-page">
+        <section class="record-hero">
+          <div class="record-hero-main">
+            <h3>${escapeHtml(player.name)}</h3>
+            <p>${escapeHtml(player.nationality)} · ${positionName(player.position)} · ${player.age} 岁</p>
+          </div>
+          <div class="record-hero-stats">
+            <div><span>能力</span><strong>${player.overall}</strong></div>
+            <div><span>潜力</span><strong>${player.potential}</strong></div>
+            <div><span>身价</span><strong>${money(player.value)}</strong></div>
+            <div><span>周薪</span><strong>${wage(player.wage)}</strong></div>
           </div>
         </section>
-        <section class="section">
-          <h3>能力值</h3>
-          <div class="bars">
+
+        <section class="record-block">
+          <h4 class="record-block-title">基本资料</h4>
+          <div class="record-kv-list">
+            <div class="record-kv"><span>姓名</span><strong>${escapeHtml(player.name)}</strong></div>
+            <div class="record-kv"><span>国籍</span><strong>${escapeHtml(player.nationality)}</strong></div>
+            <div class="record-kv"><span>位置</span><strong>${positionName(player.position)}</strong></div>
+            <div class="record-kv"><span>俱乐部</span><strong>${escapeHtml(own.name)}${parent ? `（租借自${parent.name}）` : ""}</strong></div>
+            <div class="record-kv"><span>角色</span><strong>${escapeHtml(player.role)}</strong></div>
+            <div class="record-kv"><span>合同到期</span><strong>${contractExpiryLabel(player, state)}</strong></div>
+            <div class="record-kv"><span>周薪</span><strong>${wage(player.wage)}</strong></div>
+            <div class="record-kv"><span>声望</span><strong>${Math.round(player.reputation)}</strong></div>
+            <div class="record-kv"><span>生涯总计</span><strong>${stats.appearances} 场 ${stats.goals} 球 ${stats.assists} 助攻</strong></div>
+          </div>
+        </section>
+
+        <section class="record-block">
+          <h4 class="record-block-title">能力值</h4>
+          <div class="bars record-bars">
             ${Object.entries(player.attributes)
+              .filter(([key]) => (OVERALL_WEIGHTS[player.position] || OVERALL_WEIGHTS.CM)[key] > 0)
               .map(([key, value]) => renderBar(attributeLabel(key), value))
               .join("")}
           </div>
         </section>
-        <section class="section">
-          <h3>关系与舆论</h3>
-          <div class="bars">
+
+        <section class="record-block">
+          <h4 class="record-block-title">转会记录</h4>
+          ${renderTransferHistory(transfers)}
+        </section>
+
+        <section class="record-block">
+          <div class="record-block-heading">
+            <h4 class="record-block-title">俱乐部生涯</h4>
+            <div class="record-table-labels"><span>出场</span><span>进球</span><span>助攻</span></div>
+          </div>
+          ${renderClubCareerList(displayStints)}
+        </section>
+
+        <section class="record-block">
+          <div class="record-block-heading">
+            <h4 class="record-block-title">国家/地区队生涯</h4>
+            <div class="record-table-labels"><span>出场</span><span>进球</span><span>助攻</span></div>
+          </div>
+          ${renderNationalCareerRow(player, debutMatch)}
+        </section>
+
+        <section class="record-block">
+          <div class="record-block-heading">
+            <h4 class="record-block-title">荣誉记录</h4>
+            <div class="record-sort-tabs">
+              <button class="record-sort ${stateContainer.honorSort === "competition" ? "active" : ""}" type="button" data-action="honor-sort" data-sort="competition">按赛事</button>
+              <button class="record-sort ${stateContainer.honorSort === "time" ? "active" : ""}" type="button" data-action="honor-sort" data-sort="time">按时间</button>
+            </div>
+          </div>
+          <div class="record-honor-summary">
+            <span>奖杯 ${stats.trophies}</span>
+            <span>个人奖 ${stats.personalAwards}</span>
+            <span>欧冠进球 ${stats.uclGoals}</span>
+          </div>
+          ${renderRecordHonorList(sortedHonors)}
+        </section>
+
+        <section class="record-block">
+          <h4 class="record-block-title">关系与存档</h4>
+          <div class="bars record-bars">
             ${renderBar("主帅", state.attitudes.manager)}
             ${renderBar("球迷", state.attitudes.fans)}
             ${renderBar("董事会", state.attitudes.board)}
             ${renderBar("队友", state.attitudes.teammates)}
             ${renderBar("经纪人", state.attitudes.agent)}
-            ${renderBar("士气", player.morale)}
-            ${renderBar("疲劳", player.fatigue, true)}
           </div>
-        </section>
-        <section class="section">
-          <h3>存档</h3>
-          <div class="button-stack">
+          <div class="button-stack record-save-actions">
             <button class="secondary-button" type="button" data-action="export-save">导出存档</button>
             <button class="secondary-button" type="button" data-action="import-save">导入存档</button>
             <button class="danger-button" type="button" data-action="reset-save">重新开档</button>
           </div>
-          <p class="small-note">导出会把存档 JSON 放到剪贴板。导入可迁移到手机/PWA。重新开档会清除本浏览器当前存档。</p>
         </section>
       </div>
+    `;
+  }
+
+  function sortHonorsForRecord(honors, mode) {
+    const list = honors.slice();
+    if (mode === "competition") {
+      list.sort((a, b) => {
+        const compA = a.meta?.competition || honorCategoryLabel(a.category);
+        const compB = b.meta?.competition || honorCategoryLabel(b.category);
+        return compA.localeCompare(compB, "zh-CN") || (b.seasonYear || 0) - (a.seasonYear || 0);
+      });
+      return list;
+    }
+    return list;
+  }
+
+  function transferTypeLabel(type) {
+    return {
+      join: "加盟",
+      transfer: "转会",
+      loan: "租借",
+      loanReturn: "租借回归",
+      free: "自由身"
+    }[type] || "转会";
+  }
+
+  function renderTransferHistory(transfers) {
+    if (!transfers.length) return `<p class="small-note">暂无转会记录。</p>`;
+    return `<div class="record-transfer-list">${transfers
+      .map((move) => {
+        const when = fmtCareerDotDate(move.seasonYear, move.week);
+        const feeText =
+          move.feeLabel ||
+          (move.type === "loan" || move.type === "loanReturn"
+            ? transferTypeLabel(move.type)
+            : move.fee > 0
+              ? money(move.fee)
+              : transferTypeLabel(move.type));
+        const fromClub = move.fromClubId ? club(move.fromClubId) : null;
+        const toClub = club(move.toClubId);
+        const route = fromClub
+          ? `<span class="record-transfer-route">${escapeHtml(fromClub.name)} ${clubBadge(fromClub.id, true)} <span class="record-arrow">→</span> ${clubBadge(toClub.id, true)} ${escapeHtml(toClub.name)}</span>`
+          : `<span class="record-transfer-route">${clubBadge(toClub.id, true)} ${escapeHtml(toClub.name)}</span>`;
+        return `
+          <article class="record-transfer-item">
+            <div class="record-transfer-meta">
+              <strong>${when}</strong>
+              <span>${escapeHtml(feeText)}</span>
+            </div>
+            ${route}
+          </article>
+        `;
+      })
+      .join("")}</div>`;
+  }
+
+  function renderClubCareerList(stints) {
+    if (!stints.length) return `<p class="small-note">暂无俱乐部生涯数据。</p>`;
+    return `<div class="record-career-list">${stints
+      .map(({ stint, appearances, goals, assists }) => {
+        const team = club(stint.clubId);
+        const loanTag = stint.isLoan ? `<span class="tag gold">外租</span>` : "";
+        return `
+          <article class="record-career-item">
+            <div class="record-career-main">
+              ${clubBadge(stint.clubId)}
+              <div>
+                <strong>${escapeHtml(team.name)} ${loanTag}</strong>
+                <span>${fmtStintRange(stint)}</span>
+              </div>
+            </div>
+            <div class="record-career-stats">
+              <strong>${appearances}</strong>
+              <strong>${goals}</strong>
+              <strong>${assists}</strong>
+            </div>
+          </article>
+        `;
+      })
+      .join("")}</div>`;
+  }
+
+  function renderNationalCareerRow(player, debutMatch) {
+    const national = player.national;
+    const debutText = debutMatch ? `首秀 ${debutMatch.date}` : "尚未首秀";
+    return `
+      <article class="record-career-item">
+        <div class="record-career-main">
+          <span class="club-badge nation">${escapeHtml(player.nationality.slice(0, 1))}</span>
+          <div>
+            <strong>${escapeHtml(player.nationality)}</strong>
+            <span>${debutText}</span>
+          </div>
+        </div>
+        <div class="record-career-stats">
+          <strong>${national.caps}</strong>
+          <strong>${national.goals}</strong>
+          <strong>${national.assists}</strong>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderRecordHonorList(honors) {
+    if (!honors.length) {
+      return `<p class="small-note">还没有正式荣誉。赛季末会根据联赛、欧战和国家队大赛结算。</p>`;
+    }
+    if (stateContainer.honorSort === "competition") {
+      const groups = [];
+      honors.forEach((honor) => {
+        const key = honor.meta?.competition || honorCategoryLabel(honor.category);
+        let group = groups.find((entry) => entry.key === key);
+        if (!group) {
+          group = { key, items: [] };
+          groups.push(group);
+        }
+        group.items.push(honor);
+      });
+      return groups
+        .map(
+          (group) => `
+            <div class="record-honor-group">
+              <h5>${escapeHtml(group.key)}</h5>
+              ${group.items.map((honor) => renderRecordHonorItem(honor)).join("")}
+            </div>
+          `
+        )
+        .join("");
+    }
+    return `<div class="record-honor-list">${honors.map((honor) => renderRecordHonorItem(honor)).join("")}</div>`;
+  }
+
+  function renderRecordHonorItem(honor) {
+    const competition = honor.meta?.competition || honorCategoryLabel(honor.category);
+    return `
+      <article class="record-honor-item ${honor.tier || ""}">
+        <div class="record-honor-icon">${honorTierIcon(honor.tier)}</div>
+        <div class="record-honor-body">
+          <strong>${escapeHtml(honor.title)}</strong>
+          <span>${escapeHtml(honor.date || "")} · ${escapeHtml(competition)}</span>
+          <small>${escapeHtml(honor.subtitle || "")}</small>
+        </div>
+        <span class="record-honor-count">1</span>
+      </article>
     `;
   }
 
@@ -3291,6 +4376,8 @@
         stateContainer.state.euroBonusLeagues = drawEuroBonusLeagues();
       }
       ensureLeagueSeason(currentClub().league);
+      refreshClubQualifications();
+      ensureEuropeanCampaign();
       addLog("positive", "存档导入成功。", "career");
       saveGame(true);
       showGame();
@@ -3327,6 +4414,14 @@
         stateContainer.careerTimelineCollapsed = !stateContainer.careerTimelineCollapsed;
         render();
       }
+      if (target.dataset.action === "toggle-market-offers") {
+        stateContainer.marketOffersCollapsed = !stateContainer.marketOffersCollapsed;
+        render();
+      }
+      if (target.dataset.action === "honor-sort") {
+        stateContainer.honorSort = target.dataset.sort === "competition" ? "competition" : "time";
+        render();
+      }
       if (target.dataset.action === "export-save") exportSave();
       if (target.dataset.action === "import-save") importSave();
       if (target.dataset.action === "reset-save") resetSave();
@@ -3355,6 +4450,8 @@
         stateContainer.state.euroBonusLeagues = drawEuroBonusLeagues();
       }
       ensureLeagueSeason(currentClub().league);
+      refreshClubQualifications();
+      ensureEuropeanCampaign();
       showGame();
       render();
     }
