@@ -773,12 +773,18 @@
 
   function normalizeEuropeanState(european) {
     if (!european) return null;
+    const schedule = Array.isArray(european.schedule) ? european.schedule : [];
+    const participants = Array.isArray(european.participants)
+      ? european.participants
+      : Array.from(new Set([european.clubId, ...schedule.flatMap((match) => [match.home, match.away])].filter(Boolean)));
     return {
       competition: european.competition,
       clubId: european.clubId,
       won: !!european.won,
       eliminated: !!european.eliminated,
-      schedule: Array.isArray(european.schedule) ? european.schedule : [],
+      participants,
+      standingsSeed: european.standingsSeed || 0,
+      schedule,
       stats: european.stats || { appearances: 0, goals: 0, assists: 0, ratingTotal: 0, ratedMatches: 0 }
     };
   }
@@ -816,6 +822,12 @@
     return ["欧冠", "欧冠资格赛", "欧联", "欧协联"].includes(label) ? label : "";
   }
 
+  function generatedPlayerName(team, role, seed) {
+    const first = PLAYER_NAME_POOL[Math.floor(pseudoRandom(seed + role.length) * PLAYER_NAME_POOL.length)];
+    const last = FIRST_NAMES[Math.floor(pseudoRandom(seed + team.name.length * 3) * FIRST_NAMES.length)];
+    return `${first}·${last}`;
+  }
+
   function buildLeagueLeaderboards(leagueId) {
     const state = stateContainer.state;
     const player = state.player;
@@ -837,12 +849,12 @@
       const npcAssists = Math.max(0, Math.min(teamAssists, Math.round(teamAssists * (0.32 + pseudoRandom(seed + 17) * 0.16))));
       const npcRating = clamp(6.15 + (team.rating - 70) * 0.04 + pseudoRandom(seed + 31) * 0.55, 5.8, 7.8);
       if (npcGoals > 0 || row.played > 0) {
-        scorers.push({ name: `${team.name}射手`, team: team.name, goals: npcGoals, isUser: false });
+        scorers.push({ name: generatedPlayerName(team, "scorer", seed), team: team.name, goals: npcGoals, isUser: false });
       }
       if (npcAssists > 0 || row.played > 0) {
-        assisters.push({ name: `${team.name}核心`, team: team.name, assists: npcAssists, isUser: false });
+        assisters.push({ name: generatedPlayerName(team, "creator", seed + 17), team: team.name, assists: npcAssists, isUser: false });
       }
-      ratings.push({ name: `${team.name}核心`, team: team.name, rating: npcRating, isUser: false });
+      ratings.push({ name: generatedPlayerName(team, "star", seed + 31), team: team.name, rating: npcRating, isUser: false });
     });
 
     if (currentClub().league === leagueId && player.season.appearances > 0) {
@@ -869,17 +881,50 @@
     return leaders.length ? leaders[0].goals : 0;
   }
 
+  function europeanCandidateLabels(competition) {
+    if (competition === "欧冠") return ["欧冠", "欧冠资格赛"];
+    if (competition === "欧联") return ["欧联"];
+    if (competition === "欧协联") return ["欧协联"];
+    return ["欧冠", "欧冠资格赛", "欧联", "欧协联"];
+  }
+
+  function europeanOpponentPool(competition, clubId) {
+    const state = stateContainer.state;
+    const labels = europeanCandidateLabels(competition);
+    const qualified = Object.entries(state.clubQualifications || {})
+      .filter(([id, label]) => id !== clubId && labels.includes(label))
+      .map(([id]) => club(id))
+      .filter(Boolean);
+    const ratingFloor = competition === "欧冠" ? 80 : competition === "欧联" ? 75 : 71;
+    const fallback = CLUBS.filter(
+      (entry) => entry.id !== clubId && LEAGUES[entry.league]?.level === 1 && entry.rating >= ratingFloor
+    );
+    const merged = [];
+    [...qualified, ...fallback].forEach((team) => {
+      if (!merged.some((entry) => entry.id === team.id)) merged.push(team);
+    });
+    return merged.sort((a, b) => {
+      const scoreA = a.rating * 1.4 + a.reputation + pseudoRandom(state.seasonYear + a.id.length) * 8;
+      const scoreB = b.rating * 1.4 + b.reputation + pseudoRandom(state.seasonYear + b.id.length) * 8;
+      return scoreB - scoreA;
+    });
+  }
+
   function setupEuropeanCampaign(competition, clubId) {
     const state = stateContainer.state;
     if (!competition || !clubId || LEAGUES[club(clubId).league]?.level !== 1) {
       state.european = null;
       return;
     }
-    const opponents = CLUBS.filter((entry) => entry.tier === "elite" && entry.id !== clubId)
-      .sort((a, b) => b.rating - a.rating)
-      .slice(0, 12)
+    refreshClubQualifications();
+    const opponents = europeanOpponentPool(competition, clubId)
+      .slice(0, 14)
       .sort(() => random() - 0.5)
       .slice(0, 6);
+    if (opponents.length < 6) {
+      state.european = null;
+      return;
+    }
     const weeks = [2, 6, 10, 14, 18, 22];
     const stages = ["小组赛", "小组赛", "1/8决赛", "1/4决赛", "半决赛", "决赛"];
     state.european = {
@@ -887,6 +932,8 @@
       clubId,
       won: false,
       eliminated: false,
+      participants: [clubId, ...opponents.map((team) => team.id)],
+      standingsSeed: randomInt(1000, 9999),
       schedule: weeks.map((week, index) => ({
         week,
         stage: stages[index],
@@ -913,13 +960,11 @@
     return euro.schedule.find((match) => !match.played) || null;
   }
 
-  function simulateEuropeanWeekIfDue(detailed) {
+  function simulateEuropeanMatch(match, detailed) {
     const state = stateContainer.state;
     const own = currentClub();
     const euro = state.european;
-    if (!euro || euro.clubId !== own.id || euro.eliminated || euro.won) return;
-    const match = getEuropeanMatchForWeek(state.week);
-    if (!match) return;
+    if (!euro || euro.clubId !== own.id || euro.eliminated || euro.won || !match || match.played) return;
 
     const isHome = match.home === own.id;
     const opponent = club(isHome ? match.away : match.home);
@@ -959,21 +1004,44 @@
       euro.stats.assists += contribution.assists;
       euro.stats.ratingTotal += contribution.rating;
       euro.stats.ratedMatches += 1;
+      state.player.form = clamp(state.player.form + (contribution.rating - 6.6) * 0.55 + (won ? 0.8 : drawn ? 0.1 : -0.8), -8, 8);
+      const resultMorale = won ? 4 : drawn ? 1 : -3;
+      const ratingMorale = contribution.rating > 7.4 ? 4 : contribution.rating < 5.8 ? -2 : contribution.rating < 6.2 ? -1 : 0;
+      state.player.morale = clamp(state.player.morale + resultMorale + ratingMorale, 0, 100);
+      state.attitudes.manager = clamp(state.attitudes.manager + (contribution.rating - 6.5) * 1.5 + (won ? 1 : drawn ? 0 : -1), 0, 100);
+      state.attitudes.fans = clamp(state.attitudes.fans + contribution.goals * 2.2 + contribution.assists * 1.4 + (won ? 1.5 : drawn ? 0 : -1.5), 0, 100);
+      state.attitudes.teammates = clamp(state.attitudes.teammates + (contribution.rating - 6.5) * 0.9 + (contribution.assists ? 1.3 : 0), 0, 100);
       state.player.careerStats.europeanGoals += contribution.goals;
       if (euro.competition === "欧冠") state.player.careerStats.uclGoals += contribution.goals;
       const euroXpBonus = euro.competition === "欧冠" ? 18 : euro.competition === "欧联" ? 14 : 10;
       state.player.xp += contribution.xp + euroXpBonus;
       maybeImprovePlayer();
+    } else {
+      state.player.form = clamp(state.player.form - 0.25, -8, 8);
+      state.player.morale = clamp(state.player.morale - 1, 0, 100);
+      state.attitudes.manager = clamp(state.attitudes.manager - 0.4, 0, 100);
     }
+    state.player.fatigue = clamp(state.player.fatigue + Math.round(minutes * 0.2) + randomInt(1, 5), 0, 100);
+    state.player.value = calculateValue(state.player);
+    state.player.wage = calculateWage(state.player, own);
 
     const resultText = `${own.name} ${ownGoals}-${oppGoals} ${opponent.name}`;
     if (match.stage === "决赛" && won) euro.won = true;
-    else if (!won && !drawn) euro.eliminated = true;
+    else if (match.stage !== "小组赛" && !won && !drawn) euro.eliminated = true;
 
     addLog(won ? "positive" : drawn ? "info" : "negative", `${euro.competition} ${match.stage}：${resultText}。${contribution.text}欧战成长 +${minutes > 0 ? contribution.xp + (euro.competition === "欧冠" ? 18 : euro.competition === "欧联" ? 14 : 10) : 0}。`, "match");
     if (detailed) {
-      addLog("info", `${euro.competition} ${match.stage}：${isHome ? "主场" : "客场"}对阵${opponent.name}，${won ? "球队晋级形势更好" : drawn ? "比分胶着" : "球队遭遇挫折"}。`, "match");
+      const commentary = buildCommentary(own, opponent, ownGoals, oppGoals, contribution, isHome, won, drawn);
+      commentary.reverse().forEach((line) => addLog("info", `${euro.competition}${match.stage} · ${line}`, "match"));
     }
+    maybeCreateMediaEvent(contribution, won, drawn, `${euro.competition} ${match.stage} ${resultText}`, ownGoals, oppGoals, match.stage !== "小组赛");
+  }
+
+  function simulateEuropeanWeekIfDue(detailed) {
+    const state = stateContainer.state;
+    const euro = state.european;
+    if (!euro || euro.clubId !== currentClub().id || euro.eliminated || euro.won) return;
+    simulateEuropeanMatch(getEuropeanMatchForWeek(state.week), detailed);
   }
 
   function simulateScore(homeId, awayId, playerBoost = 0) {
@@ -1715,7 +1783,7 @@
     return events;
   }
 
-  function maybeCreateMediaEvent(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0) {
+  function maybeCreateMediaEvent(contribution, won, drawn, resultText, ownGoals = 0, oppGoals = 0, forceMedia = false) {
     const state = stateContainer.state;
     const own = currentClub();
     if (state.pendingChoice) return;
@@ -1723,7 +1791,7 @@
     const ctx = getMatchMediaContext(contribution, won, drawn, ownGoals, oppGoals);
     const marketNoise = state.market.isOpen || !["stay", "minutes"].includes(state.market.strategy);
     const triggerChance = ctx.tier === "bench" || marketNoise ? 0.34 : 0.18;
-    const trigger = ctx.tier !== "routine" || marketNoise || random() < triggerChance;
+    const trigger = forceMedia || ctx.tier !== "routine" || marketNoise || random() < triggerChance;
     if (!trigger) {
       createSocialPulse(contribution, won, drawn, resultText, ownGoals, oppGoals);
       return;
@@ -2062,16 +2130,22 @@
       trainingGain("normal");
       addLog("info", "教练组安排了常规训练，你获得少量成长经验。", "training");
     }
+    const euroMatch = getEuropeanMatchForWeek(state.week);
+    if (euroMatch && state.european?.clubId === own.id) {
+      simulateEuropeanMatch(euroMatch, detailed);
+      refreshClubQualifications();
+      saveGame(true);
+      render();
+      return;
+    }
     const weekMatches = leagueSeason.schedule[state.week] || [];
     const userMatch = weekMatches.find((match) => match.home === own.id || match.away === own.id);
     weekMatches.forEach((match) => {
       if (match === userMatch) simulateUserMatch(match, detailed);
       else simulateNeutralMatch(own.league, match);
     });
-    simulateEuropeanWeekIfDue(detailed);
     refreshClubQualifications();
     leagueSeason.simulatedWeeks = Math.max(leagueSeason.simulatedWeeks, state.week + 1);
-    const euroMatch = getEuropeanMatchForWeek(state.week);
     if (!userMatch && !euroMatch) {
       addLog("info", "本周没有你的正式比赛，球队完成了训练与恢复。", "match");
     }
@@ -3689,37 +3763,224 @@
     return `
       <div class="leaderboard-block">
         <h4>${title}</h4>
-        <div class="table-wrap compact">
-          <table class="mini-table">
+        <div class="leaderboard-list">
+          ${rows
+            .slice(0, 10)
+            .map((row, index) => {
+              const value = row[valueKey];
+              const display = valueKey === "rating" && typeof value === "number" ? value.toFixed(2) : value;
+              return `
+                <article class="leaderboard-row ${row.isUser ? "highlight" : ""}">
+                  <span class="leaderboard-rank">${index + 1}</span>
+                  <div class="leaderboard-player">
+                    <strong>${escapeHtml(row.name)}</strong>
+                    <small>${escapeHtml(row.team)}</small>
+                  </div>
+                  <div class="leaderboard-value">
+                    <strong>${display}</strong>
+                    <span>${valueLabel}</span>
+                  </div>
+                </article>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function europeanParticipants(euro) {
+    if (!euro) return [];
+    return Array.from(new Set([...(euro.participants || []), euro.clubId, ...euro.schedule.flatMap((match) => [match.home, match.away])].filter(Boolean)));
+  }
+
+  function buildEuropeanStandings(euro) {
+    const state = stateContainer.state;
+    const rows = europeanParticipants(euro).map((teamId) => ({
+      teamId,
+      played: 0,
+      won: 0,
+      drawn: 0,
+      lost: 0,
+      gf: 0,
+      ga: 0,
+      gd: 0,
+      points: 0
+    }));
+    const rowFor = (teamId) => rows.find((row) => row.teamId === teamId);
+    const applyResult = (homeId, awayId, homeGoals, awayGoals) => {
+      const home = rowFor(homeId);
+      const away = rowFor(awayId);
+      if (!home || !away) return;
+      home.played += 1;
+      away.played += 1;
+      home.gf += homeGoals;
+      home.ga += awayGoals;
+      away.gf += awayGoals;
+      away.ga += homeGoals;
+      if (homeGoals > awayGoals) {
+        home.won += 1;
+        away.lost += 1;
+        home.points += 3;
+      } else if (homeGoals < awayGoals) {
+        away.won += 1;
+        home.lost += 1;
+        away.points += 3;
+      } else {
+        home.drawn += 1;
+        away.drawn += 1;
+        home.points += 1;
+        away.points += 1;
+      }
+    };
+
+    euro.schedule.filter((match) => match.played).forEach((match) => applyResult(match.home, match.away, match.homeGoals, match.awayGoals));
+
+    rows.forEach((row) => {
+      const team = club(row.teamId);
+      const targetPlayed = Math.min(6, Math.max(row.played, Math.floor((state.week + 2) / 4)));
+      while (row.played < targetPlayed) {
+        const seed = (euro.standingsSeed || 0) + row.teamId.length * 17 + row.played * 23 + state.seasonYear;
+        const gf = Math.max(0, Math.round(0.7 + (team.rating - 70) / 18 + pseudoRandom(seed) * 2.4));
+        const ga = Math.max(0, Math.round(0.6 + pseudoRandom(seed + 9) * 2.2));
+        row.played += 1;
+        row.gf += gf;
+        row.ga += ga;
+        if (gf > ga) {
+          row.won += 1;
+          row.points += 3;
+        } else if (gf < ga) {
+          row.lost += 1;
+        } else {
+          row.drawn += 1;
+          row.points += 1;
+        }
+      }
+      row.gd = row.gf - row.ga;
+    });
+
+    return rows.sort((a, b) => b.points - a.points || b.gd - a.gd || b.gf - a.gf || club(b.teamId).rating - club(a.teamId).rating);
+  }
+
+  function buildEuropeanLeaderboards(euro) {
+    const standings = buildEuropeanStandings(euro);
+    const scorers = [];
+    const assisters = [];
+    const ratings = [];
+    standings.forEach((row) => {
+      const team = club(row.teamId);
+      const seed = (euro.standingsSeed || 0) + row.teamId.length * 29 + stateContainer.state.seasonYear;
+      const userClub = row.teamId === euro.clubId;
+      const teamGoals = Math.max(0, row.gf - (userClub ? euro.stats.goals : 0));
+      const teamAssists = Math.max(0, Math.round(row.gf * 0.72) - (userClub ? euro.stats.assists : 0));
+      const goals = Math.max(0, Math.min(teamGoals, Math.round(teamGoals * (0.38 + pseudoRandom(seed) * 0.2))));
+      const assists = Math.max(0, Math.min(teamAssists, Math.round(teamAssists * (0.34 + pseudoRandom(seed + 13) * 0.18))));
+      const rating = clamp(6.2 + (team.rating - 72) * 0.04 + pseudoRandom(seed + 31) * 0.62, 5.9, 8.0);
+      scorers.push({ name: generatedPlayerName(team, "euro-scorer", seed), team: team.name, goals, isUser: false });
+      assisters.push({ name: generatedPlayerName(team, "euro-creator", seed + 13), team: team.name, assists, isUser: false });
+      ratings.push({ name: generatedPlayerName(team, "euro-star", seed + 31), team: team.name, rating, isUser: false });
+    });
+
+    if (euro.stats.appearances > 0) {
+      const player = stateContainer.state.player;
+      const avgRating = euro.stats.ratedMatches ? euro.stats.ratingTotal / euro.stats.ratedMatches : 0;
+      scorers.push({ name: player.name, team: currentClub().name, goals: euro.stats.goals, isUser: true });
+      assisters.push({ name: player.name, team: currentClub().name, assists: euro.stats.assists, isUser: true });
+      if (avgRating > 0) ratings.push({ name: player.name, team: currentClub().name, rating: avgRating, isUser: true });
+    }
+
+    scorers.sort((a, b) => b.goals - a.goals || Number(b.isUser) - Number(a.isUser));
+    assisters.sort((a, b) => b.assists - a.assists || Number(b.isUser) - Number(a.isUser));
+    ratings.sort((a, b) => b.rating - a.rating || Number(b.isUser) - Number(a.isUser));
+    return {
+      scorers: scorers.slice(0, 12),
+      assisters: assisters.slice(0, 12),
+      ratings: ratings.slice(0, 12)
+    };
+  }
+
+  function renderEuropeanCompetitionPanel(state, own) {
+    const euro = state.european;
+    if (!euro || euro.clubId !== own.id) {
+      return `
+        <section class="section">
+          <h3>欧战</h3>
+          <p class="small-note">本赛季暂未进入欧战。拿到欧冠、欧联或欧协联资格后，这里会显示欧战积分榜、晋级图和球员榜。</p>
+        </section>
+      `;
+    }
+    const standings = buildEuropeanStandings(euro);
+    const boards = buildEuropeanLeaderboards(euro);
+    return `
+      <section class="section">
+        <h3>${euro.competition} 积分榜</h3>
+        <p class="small-note">欧战联赛阶段积分榜会随你的欧战比赛推进更新；你所在俱乐部会高亮显示。</p>
+        <div class="table-wrap">
+          <table>
             <thead>
               <tr>
                 <th>#</th>
-                <th>球员</th>
-                <th>${valueLabel}</th>
+                <th>球队</th>
+                <th>赛</th>
+                <th>胜</th>
+                <th>平</th>
+                <th>负</th>
+                <th>进</th>
+                <th>失</th>
+                <th>净</th>
+                <th>分</th>
               </tr>
             </thead>
             <tbody>
-              ${rows
-                .slice(0, 10)
-                .map((row, index) => {
-                  const value = row[valueKey];
-                  const display = valueKey === "rating" && typeof value === "number" ? value.toFixed(2) : value;
-                  return `
-                    <tr class="${row.isUser ? "highlight" : ""}">
+              ${standings
+                .map(
+                  (row, index) => `
+                    <tr class="${row.teamId === own.id ? "highlight" : ""}">
                       <td>${index + 1}</td>
-                      <td>
-                        <strong>${escapeHtml(row.name)}</strong>
-                        <small>${escapeHtml(row.team)}</small>
-                      </td>
-                      <td><strong>${display}</strong></td>
+                      <td>${escapeHtml(club(row.teamId).name)}</td>
+                      <td>${row.played}</td>
+                      <td>${row.won}</td>
+                      <td>${row.drawn}</td>
+                      <td>${row.lost}</td>
+                      <td>${row.gf}</td>
+                      <td>${row.ga}</td>
+                      <td>${row.gd}</td>
+                      <td><strong>${row.points}</strong></td>
                     </tr>
-                  `;
-                })
+                  `
+                )
                 .join("")}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
+      <section class="section">
+        <h3>${euro.competition} 晋级图</h3>
+        <div class="euro-bracket">
+          ${euro.schedule
+            .map((match) => {
+              const isHome = match.home === own.id;
+              const opponent = club(isHome ? match.away : match.home);
+              const result = match.played ? `${match.homeGoals}-${match.awayGoals}` : `第 ${match.week + 1} 周`;
+              return `
+                <article class="euro-bracket-node ${match.played ? "played" : match.week === state.week ? "current" : ""}">
+                  <strong>${match.stage}</strong>
+                  <span>${isHome ? "主场" : "客场"} vs ${escapeHtml(opponent.name)}</span>
+                  <b>${result}</b>
+                </article>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>
+      <section class="section">
+        <h3>${euro.competition} 球员榜</h3>
+        <div class="leaderboards-grid">
+          ${renderLeaderboardBlock("进球榜", boards.scorers, "goals", "进球")}
+          ${renderLeaderboardBlock("助攻榜", boards.assisters, "assists", "助攻")}
+          ${renderLeaderboardBlock("评分榜", boards.ratings, "rating", "均分")}
+        </div>
+      </section>
     `;
   }
 
@@ -3901,6 +4162,7 @@
           ${renderLeaderboardBlock("评分榜", boards.ratings, "rating", "均分")}
         </div>
       </section>
+      ${renderEuropeanCompetitionPanel(state, currentClub())}
     `;
   }
 
